@@ -44,6 +44,8 @@ Run a live view:
 ./codex-top.sh
 ```
 
+Live mode switches to the terminal's alternate screen, redraws in place, and restores the previous screen when it exits. This reduces visible flicker compared with clearing the whole screen each refresh.
+
 Change refresh interval:
 
 ```sh

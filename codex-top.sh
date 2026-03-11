@@ -4,6 +4,7 @@ set -eu
 INTERVAL_SECONDS=2
 RUN_ONCE=0
 MONITOR_PID=$$
+LIVE_SCREEN_ACTIVE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -265,6 +266,18 @@ render_dashboard() {
   render_header_line 116
 }
 
+enter_live_screen() {
+  LIVE_SCREEN_ACTIVE=1
+  printf '\033[?1049h\033[?25l'
+}
+
+leave_live_screen() {
+  if [ "$LIVE_SCREEN_ACTIVE" -eq 1 ]; then
+    printf '\033[?25h\033[?1049l'
+    LIVE_SCREEN_ACTIVE=0
+  fi
+}
+
 run_once() {
   collect_system_metrics
   collect_agent_rollup
@@ -272,9 +285,13 @@ run_once() {
 }
 
 run_loop() {
+  trap 'leave_live_screen' EXIT INT TERM HUP
+  enter_live_screen
+
   while :; do
-    printf '\033[H\033[2J'
+    printf '\033[H'
     run_once
+    printf '\033[J'
     sleep "$INTERVAL_SECONDS"
   done
 }
