@@ -5,6 +5,10 @@ INTERVAL_SECONDS=2
 RUN_ONCE=0
 MONITOR_PID=$$
 LIVE_SCREEN_ACTIVE=0
+LOOP_ITERATION=0
+PREVIOUS_FRAME=""
+TEST_MODE="${CODEX_TOP_TEST_MODE:-}"
+TEST_CYCLES="${CODEX_TOP_TEST_CYCLES:-0}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -71,6 +75,23 @@ safe_percent() {
 }
 
 collect_system_metrics() {
+  if [ "$TEST_MODE" = "diff" ]; then
+    MEM_TOTAL_KB=4194304
+    MEM_FREE_KB=1048576
+    MEM_AVAILABLE_KB=2097152
+    SWAP_TOTAL_KB=2097152
+    SWAP_FREE_KB=1048576
+    DATA_BLOCKS=4194304
+    DATA_USED_BLOCKS=1048576
+    DATA_AVAILABLE_BLOCKS=3145728
+    DATA_USED_PERCENT=25
+    MEM_AVAILABLE_PERCENT=50.0
+    SWAP_USED_KB=1048576
+    SWAP_FREE_PERCENT=50.0
+    RISK_LEVEL="OK"
+    return
+  fi
+
   eval "$(
     awk '
       /MemTotal:/ { print "MEM_TOTAL_KB=" $2 }
@@ -101,6 +122,19 @@ collect_system_metrics() {
 }
 
 collect_agent_rollup() {
+  if [ "$TEST_MODE" = "diff" ]; then
+    if [ "$LOOP_ITERATION" -le 1 ]; then
+      CLAUDE_COUNT=1
+      CLAUDE_RSS_KB=131072
+    else
+      CLAUDE_COUNT=2
+      CLAUDE_RSS_KB=262144
+    fi
+    CODEX_COUNT=1
+    CODEX_RSS_KB=196608
+    return
+  fi
+
   eval "$(
     ps -eo rss=,comm=,args= | awk '
       tolower($0) ~ /claude/ && tolower($0) !~ /awk|grep|rg/ {
@@ -129,6 +163,16 @@ render_header_line() {
 }
 
 render_process_tree() {
+  if [ "$TEST_MODE" = "diff" ]; then
+    cat <<'EOF'
+PID    PPID   RSS_KB  %CPU   ROLE      COMMAND
+------ ------ ------- ------ --------- --------------------------------------------------------
+1234   1      65536   0.0    CLAUDE    claude
+2345   1      98304   0.0    CODEX     codex
+EOF
+    return
+  fi
+
   ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
@@ -242,7 +286,11 @@ render_process_tree() {
 }
 
 render_dashboard() {
-  now=$(date '+%F %T %Z')
+  if [ "$TEST_MODE" = "diff" ]; then
+    now='2026-03-12 00:00:00 CST'
+  else
+    now=$(date '+%F %T %Z')
+  fi
   mem_available_mib=$(to_mib "$MEM_AVAILABLE_KB")
   mem_total_mib=$(to_mib "$MEM_TOTAL_KB")
   swap_free_mib=$(to_mib "$SWAP_FREE_KB")
@@ -284,14 +332,53 @@ run_once() {
   render_dashboard
 }
 
+render_frame_diff() {
+  previous_frame="$1"
+  current_frame="$2"
+
+  if [ -z "$previous_frame" ]; then
+    printf '%s' "$current_frame"
+    printf '\033[J'
+    return
+  fi
+
+  awk -v previous_frame="$previous_frame" -v current_frame="$current_frame" 'BEGIN {
+    previous_count = split(previous_frame, previous_lines, /\n/);
+    current_count = split(current_frame, current_lines, /\n/);
+    max_count = previous_count > current_count ? previous_count : current_count;
+
+    for (i = 1; i <= max_count; i++) {
+      if (previous_lines[i] != current_lines[i]) {
+        printf "\033[%d;1H", i;
+        if (i <= current_count) {
+          printf "%s\033[K", current_lines[i];
+        } else {
+          printf "\033[K";
+        }
+      }
+    }
+
+    if (current_count < previous_count) {
+      printf "\033[%d;1H\033[J", current_count + 1;
+    }
+  }'
+}
+
 run_loop() {
   trap 'leave_live_screen' EXIT INT TERM HUP
   enter_live_screen
 
   while :; do
+    LOOP_ITERATION=$((LOOP_ITERATION + 1))
+    current_frame=$(run_once)
     printf '\033[H'
-    run_once
-    printf '\033[J'
+    render_frame_diff "$PREVIOUS_FRAME" "$current_frame"
+    PREVIOUS_FRAME=$current_frame
+
+    if [ "$TEST_CYCLES" -gt 0 ] && [ "$LOOP_ITERATION" -ge "$TEST_CYCLES" ]; then
+      break
+    fi
+
     sleep "$INTERVAL_SECONDS"
   done
 }

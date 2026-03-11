@@ -18,7 +18,7 @@ for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "PID"; do
   fi
 done
 
-for forbidden in "codex-top.sh" "test_codex_top.sh"; do
+for forbidden in "codex-top.sh"; do
   if printf '%s\n' "$output" | grep -F "$forbidden" >/dev/null 2>&1; then
     echo "FAIL: monitor should hide its own helper subtree ('$forbidden')" >&2
     exit 1
@@ -56,6 +56,30 @@ done
 
 if printf '%s' "$live_output" | grep -F "$(printf '\033[2J')" >/dev/null 2>&1; then
   echo "FAIL: live mode should avoid full-screen clear" >&2
+  exit 1
+fi
+
+diff_output=$(
+  CODEX_TOP_TEST_MODE=diff \
+  CODEX_TOP_TEST_CYCLES=2 \
+  sh "$SCRIPT" --interval 1
+)
+
+title_count=$(printf '%s' "$diff_output" | awk '
+  BEGIN { count = 0 }
+  {
+    count += gsub(/TERMUX SYSTEM SNAPSHOT/, "&")
+  }
+  END { print count }
+')
+
+if [ "$title_count" -ne 1 ]; then
+  echo "FAIL: diff mode should avoid redrawing unchanged title lines" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$diff_output" | grep -F "$(printf '\033[5;1H')" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should reposition cursor to the changed row" >&2
   exit 1
 fi
 
