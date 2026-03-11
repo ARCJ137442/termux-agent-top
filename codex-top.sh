@@ -9,6 +9,12 @@ LOOP_ITERATION=0
 PREVIOUS_FRAME=""
 TEST_MODE="${CODEX_TOP_TEST_MODE:-}"
 TEST_CYCLES="${CODEX_TOP_TEST_CYCLES:-0}"
+DEFAULT_PANEL_WIDTH=116
+MIN_PANEL_WIDTH=72
+PROCESS_FIXED_WIDTH=39
+PANEL_WIDTH=$DEFAULT_PANEL_WIDTH
+PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
+PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -26,6 +32,39 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+detect_terminal_columns() {
+  if [ -n "${COLUMNS:-}" ]; then
+    printf '%s\n' "$COLUMNS"
+    return
+  fi
+
+  stty size 2>/dev/null | awk 'NF >= 2 { print $2; exit }'
+}
+
+configure_layout() {
+  terminal_columns=$(detect_terminal_columns)
+
+  case "$terminal_columns" in
+    ''|*[!0-9]*)
+      PANEL_WIDTH=$DEFAULT_PANEL_WIDTH
+      ;;
+    *)
+      PANEL_WIDTH=$terminal_columns
+      if [ "$PANEL_WIDTH" -gt "$DEFAULT_PANEL_WIDTH" ]; then
+        PANEL_WIDTH=$DEFAULT_PANEL_WIDTH
+      fi
+      if [ "$PANEL_WIDTH" -lt "$MIN_PANEL_WIDTH" ]; then
+        PANEL_WIDTH=$MIN_PANEL_WIDTH
+      fi
+      ;;
+  esac
+
+  PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
+  PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
+}
+
+configure_layout
 
 repeat_char() {
   char="$1"
@@ -156,10 +195,59 @@ collect_agent_rollup() {
 }
 
 render_header_line() {
-  width="$1"
   printf "+"
-  repeat_char "=" "$((width - 2))"
+  repeat_char "=" "$((PANEL_WIDTH - 2))"
   printf "+\n"
+}
+
+render_panel_line() {
+  content="$1"
+  awk -v width="$PANEL_INNER_WIDTH" -v content="$content" 'BEGIN {
+    text = content;
+    if (length(text) > width) {
+      if (width > 3) {
+        text = substr(text, 1, width - 3) "...";
+      } else {
+        text = substr(text, 1, width);
+      }
+    }
+    printf "| %-" width "s |\n", text;
+  }'
+}
+
+render_panel_lines_wrapped() {
+  content="$1"
+  printf '%s\n' "$content" | awk -v width="$PANEL_INNER_WIDTH" '
+    function emit_line(text) {
+      printf "| %-" width "s |\n", text;
+    }
+    {
+      line = "";
+      remaining = $0;
+
+      while (length(remaining) > width) {
+        split_pos = 0;
+        for (i = width; i >= 1; i--) {
+          if (substr(remaining, i, 1) == " ") {
+            split_pos = i;
+            break;
+          }
+        }
+
+        if (split_pos == 0) {
+          emit_line(substr(remaining, 1, width));
+          remaining = substr(remaining, width + 1);
+        } else {
+          emit_line(substr(remaining, 1, split_pos - 1));
+          remaining = substr(remaining, split_pos + 1);
+        }
+
+        sub(/^ +/, "", remaining);
+      }
+
+      emit_line(remaining);
+    }
+  '
 }
 
 render_process_tree() {
@@ -173,11 +261,18 @@ EOF
     return
   fi
 
-  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" '
+  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
       return s;
+    }
+    function repeat_str(char, count,    out, i) {
+      out = "";
+      for (i = 0; i < count; i++) {
+        out = out char;
+      }
+      return out;
     }
     function is_agent_root(pid) {
       return comm[pid] == "claude" || comm[pid] == "codex";
@@ -194,8 +289,14 @@ EOF
       return "child";
     }
     function short_args(text, max_len) {
+      if (max_len < 1) {
+        return "";
+      }
       if (length(text) <= max_len) {
         return text;
+      }
+      if (max_len <= 3) {
+        return substr(text, 1, max_len);
       }
       return substr(text, 1, max_len - 3) "...";
     }
@@ -224,7 +325,7 @@ EOF
       if (depth > 0) {
         prefix = prefix "|- ";
       }
-      summary = short_args(args[pid], 56);
+      summary = short_args(args[pid], command_width - length(prefix));
       printf "%-6s %-6s %-7s %-6s %-9s %s%s\n",
         pid,
         ppid[pid],
@@ -268,12 +369,10 @@ EOF
     }
     END {
       mark_hidden_chain(monitor_pid);
-      for (pid_val in hidden) {
-        mark_hidden_descendants(pid_val);
-      }
+      mark_hidden_descendants(monitor_pid);
 
-      print "PID    PPID   RSS_KB  %CPU   ROLE      COMMAND";
-      print "------ ------ ------- ------ --------- --------------------------------------------------------";
+      printf "%-6s %-6s %-7s %-6s %-9s %-*s\n", "PID", "PPID", "RSS_KB", "%CPU", "ROLE", command_width, "COMMAND";
+      printf "%-6s %-6s %-7s %-6s %-9s %s\n", "------", "------", "-------", "------", "---------", repeat_str("-", command_width);
       for (i = 1; i <= root_count; i++) {
         pid_val = root_order[i];
         if (!hidden[pid_val] && !printed[pid_val]) {
@@ -299,19 +398,14 @@ render_dashboard() {
   codex_rss_mib=$(to_mib "$CODEX_RSS_KB")
   data_free_gib=$(awk -v blocks="$DATA_AVAILABLE_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
 
-  render_header_line 116
-  printf "| %-112s |\n" "TERMUX SYSTEM SNAPSHOT  $now"
-  render_header_line 116
-  printf "| RISK: %-5s  MemAvailable: %6s MiB [%s]  SwapFree: %6s MiB [%s]  /data: %3s%% used |\n" \
-    "$RISK_LEVEL" \
-    "$mem_available_mib" "$(bar "$MEM_AVAILABLE_PERCENT" 18)" \
-    "$swap_free_mib" "$(bar "$SWAP_FREE_PERCENT" 18)" \
-    "$DATA_USED_PERCENT"
-  printf "| CLAUDE: %2s proc  RSS %6s MiB    CODEX: %2s proc  RSS %6s MiB    /data free: %5s GiB           |\n" \
-    "$CLAUDE_COUNT" "$claude_rss_mib" "$CODEX_COUNT" "$codex_rss_mib" "$data_free_gib"
-  render_header_line 116
+  render_header_line
+  render_panel_line "TERMUX SYSTEM SNAPSHOT  $now"
+  render_header_line
+  render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB [$(bar "$MEM_AVAILABLE_PERCENT" 12)]  SwapFree: $swap_free_mib MiB [$(bar "$SWAP_FREE_PERCENT" 12)]  /data: $DATA_USED_PERCENT% used"
+  render_panel_lines_wrapped "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB    CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB    /data free: $data_free_gib GiB"
+  render_header_line
   render_process_tree
-  render_header_line 116
+  render_header_line
 }
 
 enter_live_screen() {

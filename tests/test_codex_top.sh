@@ -18,6 +18,30 @@ for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "PID"; do
   fi
 done
 
+if ! printf '%s\n' "$output" | awk 'length($0) > 116 { exit 1 }'; then
+  echo "FAIL: one-shot output should fit within the 116-column panel width" >&2
+  exit 1
+fi
+
+narrow_output=$(COLUMNS=90 "$SCRIPT" --once)
+
+if ! printf '%s\n' "$narrow_output" | awk 'length($0) > 90 { exit 1 }'; then
+  echo "FAIL: one-shot output should adapt to narrow terminal widths" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$narrow_output" | grep -F "COMMAND" >/dev/null 2>&1; then
+  echo "FAIL: narrow output should still include the process table header" >&2
+  exit 1
+fi
+
+for metric_label in "CLAUDE:" "CODEX:"; do
+  if ! printf '%s\n' "$narrow_output" | grep -F "$metric_label" >/dev/null 2>&1; then
+    echo "FAIL: narrow output should preserve '$metric_label' in the summary area" >&2
+    exit 1
+  fi
+done
+
 for forbidden in "codex-top.sh"; do
   if printf '%s\n' "$output" | grep -F "$forbidden" >/dev/null 2>&1; then
     echo "FAIL: monitor should hide its own helper subtree ('$forbidden')" >&2
