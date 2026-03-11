@@ -3,6 +3,7 @@ set -eu
 
 INTERVAL_SECONDS=2
 RUN_ONCE=0
+MONITOR_PID=$$
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -127,11 +128,14 @@ render_header_line() {
 }
 
 render_process_tree() {
-  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk '
+  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
       return s;
+    }
+    function is_agent_root(pid) {
+      return comm[pid] == "claude" || comm[pid] == "codex";
     }
     function role_label(pid, depth) {
       if (depth == 0) {
@@ -149,6 +153,23 @@ render_process_tree() {
         return text;
       }
       return substr(text, 1, max_len - 3) "...";
+    }
+    function mark_hidden_chain(pid) {
+      while (pid != "" && pid != 0 && !is_agent_root(pid) && !hidden[pid]) {
+        hidden[pid] = 1;
+        pid = ppid[pid];
+      }
+    }
+    function mark_hidden_descendants(pid, child_ids, n, i, child_pid) {
+      hidden[pid] = 1;
+
+      n = split(children[pid], child_ids, " ");
+      for (i = 1; i <= n; i++) {
+        child_pid = child_ids[i];
+        if (child_pid != "" && !hidden[child_pid]) {
+          mark_hidden_descendants(child_pid);
+        }
+      }
     }
     function print_node(pid, depth, prefix, child_ids, n, i, child_pid, summary) {
       prefix = "";
@@ -171,7 +192,7 @@ render_process_tree() {
       n = split(children[pid], child_ids, " ");
       for (i = 1; i <= n; i++) {
         child_pid = child_ids[i];
-        if (child_pid != "" && !printed[child_pid]) {
+        if (child_pid != "" && !hidden[child_pid] && !printed[child_pid]) {
           printed[child_pid] = 1;
           print_node(child_pid, depth + 1);
         }
@@ -201,11 +222,16 @@ render_process_tree() {
       }
     }
     END {
+      mark_hidden_chain(monitor_pid);
+      for (pid_val in hidden) {
+        mark_hidden_descendants(pid_val);
+      }
+
       print "PID    PPID   RSS_KB  %CPU   ROLE      COMMAND";
       print "------ ------ ------- ------ --------- --------------------------------------------------------";
       for (i = 1; i <= root_count; i++) {
         pid_val = root_order[i];
-        if (!printed[pid_val]) {
+        if (!hidden[pid_val] && !printed[pid_val]) {
           printed[pid_val] = 1;
           print_node(pid_val, 0);
         }
