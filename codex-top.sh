@@ -495,6 +495,9 @@ render_title_line() {
   if [ -n "$right_text" ]; then
     if [ "$STYLE_ENABLED" -eq 1 ]; then
       title_width="$PANEL_WIDTH"
+      if [ "$title_width" -gt 1 ]; then
+        title_width=$((title_width - 1))
+      fi
     else
       title_width="$PANEL_INNER_WIDTH"
     fi

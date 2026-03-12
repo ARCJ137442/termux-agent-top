@@ -12,6 +12,8 @@ fi
 output=$("$SCRIPT" --once)
 styled_output=$(CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once)
 styled_diff_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
+styled_fps_integer_output=$(COLUMNS=80 CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once --interval 0.25)
+styled_fps_fraction_output=$(COLUMNS=80 CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once --interval 8)
 fps_output=$(COLUMNS=90 "$SCRIPT" --once --interval 2)
 fps_zero_output=$("$SCRIPT" --once --interval 0)
 reverse_ansi=$(printf '\033[7m')
@@ -54,6 +56,16 @@ case "$fps_zero_title_line" in
     exit 1
     ;;
 esac
+
+if ! printf '%s' "$styled_fps_integer_output" | grep -F "FPS: 4 ${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: styled title should keep a trailing reverse-video spacer after 'FPS: 4'" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_fps_fraction_output" | grep -F "FPS: 0.125 ${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: styled title should keep a trailing reverse-video spacer after 'FPS: 0.125'" >&2
+  exit 1
+fi
 
 for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
   if ! printf '%s\n' "$output" | grep -F "$pattern" >/dev/null 2>&1; then
