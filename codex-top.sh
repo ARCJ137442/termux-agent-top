@@ -12,10 +12,11 @@ TEST_CYCLES="${CODEX_TOP_TEST_CYCLES:-0}"
 FORCE_STYLE="${CODEX_TOP_FORCE_STYLE:-0}"
 DEFAULT_PANEL_WIDTH=300
 MIN_PANEL_WIDTH=72
+SUMMARY_BAR_WIDTH=20
 CPU_BAR_WIDTH=10
 MEM_BAR_WIDTH=10
-PROCESS_MEM_BAR_FIELD_WIDTH=$((MEM_BAR_WIDTH + 2))
-PROCESS_CPU_BAR_FIELD_WIDTH=$((CPU_BAR_WIDTH + 2))
+PROCESS_MEM_BAR_FIELD_WIDTH=$MEM_BAR_WIDTH
+PROCESS_CPU_BAR_FIELD_WIDTH=$CPU_BAR_WIDTH
 PROCESS_FIXED_WIDTH=$((6 + 1 + 6 + 1 + 7 + 1 + 6 + 1 + PROCESS_MEM_BAR_FIELD_WIDTH + 1 + 6 + 1 + PROCESS_CPU_BAR_FIELD_WIDTH + 1 + 9 + 1))
 PANEL_WIDTH=$DEFAULT_PANEL_WIDTH
 PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
@@ -23,6 +24,9 @@ PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
 STYLE_ENABLED=0
 ANSI_REVERSE="$(printf '\033[7m')"
 ANSI_RESET="$(printf '\033[0m')"
+ANSI_BRIGHT_RED="$(printf '\033[91m')"
+ANSI_BRIGHT_GREEN="$(printf '\033[92m')"
+ANSI_BRIGHT_YELLOW="$(printf '\033[93m')"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -123,12 +127,58 @@ bar() {
       filled = width;
     }
     for (i = 0; i < filled; i++) {
-      printf "#";
+      printf "█";
     }
     for (i = filled; i < width; i++) {
-      printf "-";
+      printf "░";
     }
   }'
+}
+
+bar_color_code() {
+  percent="$1"
+  kind="$2"
+
+  if [ "$STYLE_ENABLED" -eq 0 ]; then
+    printf '%s' ""
+    return
+  fi
+
+  awk -v percent="$percent" -v kind="$kind" -v green="$ANSI_BRIGHT_GREEN" -v yellow="$ANSI_BRIGHT_YELLOW" -v red="$ANSI_BRIGHT_RED" 'BEGIN {
+    if (kind == "availability") {
+      if (percent < 20) {
+        printf "%s", red;
+      } else if (percent < 40) {
+        printf "%s", yellow;
+      } else {
+        printf "%s", green;
+      }
+      exit;
+    }
+
+    if (percent >= 80) {
+      printf "%s", red;
+    } else if (percent >= 60) {
+      printf "%s", yellow;
+    } else {
+      printf "%s", green;
+    }
+  }'
+}
+
+render_bar() {
+  percent="$1"
+  width="$2"
+  kind="$3"
+  bar_text=$(bar "$percent" "$width")
+
+  if [ "$STYLE_ENABLED" -eq 1 ]; then
+    color=$(bar_color_code "$percent" "$kind")
+    printf '%s%s%s' "$color" "$bar_text" "$ANSI_RESET"
+    return
+  fi
+
+  printf '%s' "$bar_text"
 }
 
 to_mib() {
@@ -455,16 +505,16 @@ render_process_tree() {
 
   if [ "$TEST_MODE" = "diff" ]; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
-    sample_mem_bar_low="[$(bar 1.6 "$MEM_BAR_WIDTH")]"
-    sample_mem_bar_mid="[$(bar 2.3 "$MEM_BAR_WIDTH")]"
-    sample_bar_low="[$(bar 12.5 "$CPU_BAR_WIDTH")]"
-    sample_bar_mid="[$(bar 55 "$CPU_BAR_WIDTH")]"
+    sample_mem_bar_low="$(render_bar 1.6 "$MEM_BAR_WIDTH" utilization)"
+    sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
+    sample_bar_low="$(render_bar 12.5 "$CPU_BAR_WIDTH" utilization)"
+    sample_bar_mid="$(render_bar 55 "$CPU_BAR_WIDTH" utilization)"
     printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' 1234 1 65536 1.6 "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" 12.5 "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" CLAUDE claude
     printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' 2345 1 98304 2.3 "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" 55.0 "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" CODEX "node $sample_path"
     return
   fi
 
-  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" '
+  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_reset="$ANSI_RESET" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
@@ -519,14 +569,45 @@ render_process_tree() {
         filled = width;
       }
 
-      bar_text = "[";
+      bar_text = "";
       for (i = 0; i < filled; i++) {
-        bar_text = bar_text "#";
+        bar_text = bar_text "█";
       }
       for (i = filled; i < width; i++) {
-        bar_text = bar_text "-";
+        bar_text = bar_text "░";
       }
-      return bar_text "]";
+      return bar_text;
+    }
+    function bar_color(percent, kind) {
+      if (style_enabled != 1) {
+        return "";
+      }
+
+      if (kind == "availability") {
+        if (percent < 20) {
+          return ansi_red;
+        }
+        if (percent < 40) {
+          return ansi_yellow;
+        }
+        return ansi_green;
+      }
+
+      if (percent >= 80) {
+        return ansi_red;
+      }
+      if (percent >= 60) {
+        return ansi_yellow;
+      }
+      return ansi_green;
+    }
+    function render_bar(percent, width, kind, bar_text, color_text) {
+      bar_text = cpu_bar(percent, width);
+      color_text = bar_color(percent, kind);
+      if (style_enabled == 1) {
+        return color_text bar_text ansi_reset;
+      }
+      return bar_text;
     }
     function compact_home_path(text,    pos, result) {
       result = "";
@@ -569,10 +650,10 @@ render_process_tree() {
         rss[pid],
         mem_percent,
         mem_bar_field_width,
-        cpu_bar(mem_percent, mem_bar_width),
+        render_bar(mem_percent, mem_bar_width, "utilization"),
         cpu[pid],
         cpu_bar_field_width,
-        cpu_bar(cpu[pid], cpu_bar_width),
+        render_bar(cpu[pid], cpu_bar_width, "utilization"),
         role_label(pid, depth),
         prefix,
         summary;
@@ -645,10 +726,10 @@ render_dashboard() {
     render_title_line "TERMUX SYSTEM SNAPSHOT  $now"
     render_plain_header_line
   fi
-  render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB [$(bar "$MEM_AVAILABLE_PERCENT" 12)]  SwapFree: $swap_free_mib MiB [$(bar "$SWAP_FREE_PERCENT" 12)]  /data: $DATA_USED_PERCENT% used"
+  render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) ${MEM_AVAILABLE_PERCENT}%  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) ${SWAP_FREE_PERCENT}%  /data: $DATA_USED_PERCENT% used"
   render_panel_lines_wrapped "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB    CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB    /data free: $data_free_gib GiB"
-  render_panel_lines_wrapped "AgentsCPU: $AGENT_CPU_PERCENT [$(bar "$AGENT_CPU_PERCENT" "$CPU_BAR_WIDTH")]"
-  render_panel_lines_wrapped "AgentsMem: $AGENT_MEM_PERCENT [$(bar "$AGENT_MEM_PERCENT" "$MEM_BAR_WIDTH")]"
+  render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) ${AGENT_CPU_PERCENT}%"
+  render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) ${AGENT_MEM_PERCENT}%"
   if [ "$STYLE_ENABLED" -eq 0 ]; then
     render_plain_header_line
   fi

@@ -11,7 +11,10 @@ fi
 
 output=$("$SCRIPT" --once)
 styled_output=$(CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once)
+styled_diff_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
 reverse_ansi=$(printf '\033[7m')
+green_ansi=$(printf '\033[92m')
+reset_ansi=$(printf '\033[0m')
 
 for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
   if ! printf '%s\n' "$output" | grep -F "$pattern" >/dev/null 2>&1; then
@@ -19,6 +22,16 @@ for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%ME
     exit 1
   fi
 done
+
+if ! printf '%s\n' "$output" | grep -F "█" >/dev/null 2>&1; then
+  echo "FAIL: output should render block-style utilization bars" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}██████████░░░░░░░░░░${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color the full 20-slot summary bar with one ANSI color" >&2
+  exit 1
+fi
 
 title_line=$(printf '%s\n' "$styled_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
 if ! printf '%s' "$title_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
@@ -62,7 +75,7 @@ if printf '%s\n' "$styled_output" | grep -F "+====" >/dev/null 2>&1; then
 fi
 
 reported_agents_mem=$(
-  printf '%s\n' "$output" | sed -n 's/.*AgentsMem: \([0-9.][0-9.]*\) .*/\1/p' | head -n 1
+  printf '%s\n' "$output" | sed -n 's/.*AgentsMem: .* \([0-9.][0-9.]*%\).*/\1/p' | sed 's/%$//' | head -n 1
 )
 mem_total_kb=$(awk '/MemTotal:/ { print $2; exit }' /proc/meminfo)
 agent_root_rss_kb=$(ps -eo comm=,rss= | awk '$1 == "claude" || $1 == "codex" { rss += $2 } END { print rss + 0 }')
@@ -192,8 +205,8 @@ if ! printf '%s' "$diff_output" | grep -F "AgentsMem:" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! printf '%s' "$diff_output" | grep -F "[######----]" >/dev/null 2>&1; then
-  echo "FAIL: diff mode should render a 10-slot utilization bar" >&2
+if ! printf '%s' "$diff_output" | grep -F "██████░░░░" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should render a 10-slot block utilization bar" >&2
   exit 1
 fi
 
