@@ -20,9 +20,11 @@ PROCESS_MEM_BAR_FIELD_WIDTH=$MEM_BAR_WIDTH
 PROCESS_CPU_BAR_FIELD_WIDTH=$CPU_BAR_WIDTH
 PROCESS_FIXED_WIDTH=$((6 + 1 + 6 + 1 + 7 + 1 + 6 + 1 + PROCESS_MEM_BAR_FIELD_WIDTH + 1 + 6 + 1 + PROCESS_CPU_BAR_FIELD_WIDTH + 1 + 9 + 1))
 PANEL_WIDTH=$DEFAULT_PANEL_WIDTH
+PANEL_HEIGHT=0
 PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
 PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
 STYLE_ENABLED=0
+RESIZE_PENDING=0
 ANSI_REVERSE="$(printf '\033[7m')"
 ANSI_RESET="$(printf '\033[0m')"
 ANSI_BRIGHT_ORANGE="$(printf '\033[38;2;255;170;0m')"
@@ -79,6 +81,15 @@ if [ "$FORCE_STYLE" = "1" ] || [ -t 1 ]; then
 fi
 
 detect_terminal_columns() {
+  if [ "$TEST_MODE" = "resize" ]; then
+    if [ "$LOOP_ITERATION" -le 1 ]; then
+      printf '%s\n' 110
+    else
+      printf '%s\n' 80
+    fi
+    return
+  fi
+
   if [ -n "${COLUMNS:-}" ]; then
     printf '%s\n' "$COLUMNS"
     return
@@ -87,8 +98,27 @@ detect_terminal_columns() {
   stty size 2>/dev/null | awk 'NF >= 2 { print $2; exit }'
 }
 
+detect_terminal_rows() {
+  if [ "$TEST_MODE" = "resize" ]; then
+    if [ "$LOOP_ITERATION" -le 1 ]; then
+      printf '%s\n' 14
+    else
+      printf '%s\n' 6
+    fi
+    return
+  fi
+
+  if [ -n "${LINES:-}" ]; then
+    printf '%s\n' "$LINES"
+    return
+  fi
+
+  stty size 2>/dev/null | awk 'NF >= 2 { print $1; exit }'
+}
+
 configure_layout() {
   terminal_columns=$(detect_terminal_columns)
+  terminal_rows=$(detect_terminal_rows)
 
   case "$terminal_columns" in
     ''|*[!0-9]*)
@@ -102,6 +132,15 @@ configure_layout() {
       if [ "$PANEL_WIDTH" -lt "$MIN_PANEL_WIDTH" ]; then
         PANEL_WIDTH=$MIN_PANEL_WIDTH
       fi
+      ;;
+  esac
+
+  case "$terminal_rows" in
+    ''|*[!0-9]*)
+      PANEL_HEIGHT=0
+      ;;
+    *)
+      PANEL_HEIGHT=$terminal_rows
       ;;
   esac
 
@@ -354,9 +393,54 @@ determine_risk_level() {
   }'
 }
 
+clip_frame_to_terminal_height() {
+  frame_text="$1"
+
+  case "$PANEL_HEIGHT" in
+    ''|*[!0-9]*|0)
+      printf '%s' "$frame_text"
+      return
+      ;;
+  esac
+
+  printf '%s\n' "$frame_text" | awk -v max_rows="$PANEL_HEIGHT" 'NR <= max_rows { print }'
+}
+
+sleep_until_refresh() {
+  interval="$1"
+
+  if awk -v interval="$interval" 'BEGIN { exit !(interval <= 0) }'; then
+    return
+  fi
+
+  remaining="$interval"
+  while awk -v remaining="$remaining" 'BEGIN { exit !(remaining > 0) }'; do
+    if [ "$RESIZE_PENDING" -eq 1 ]; then
+      return
+    fi
+
+    sleep_chunk=$(awk -v remaining="$remaining" 'BEGIN {
+      if (remaining > 0.1) {
+        print "0.1";
+      } else {
+        printf "%.3f", remaining;
+      }
+    }')
+
+    sleep "$sleep_chunk" || :
+    remaining=$(awk -v remaining="$remaining" -v chunk="$sleep_chunk" 'BEGIN {
+      next_value = remaining - chunk;
+      if (next_value < 0) {
+        next_value = 0;
+      }
+      printf "%.3f", next_value;
+    }')
+  done
+}
+
 collect_system_metrics() {
   case "$TEST_MODE" in
-    diff|diff_title)
+    diff|diff_title|resize)
       MEM_TOTAL_KB=4194304
       MEM_FREE_KB=1048576
       MEM_AVAILABLE_KB=2097152
@@ -484,7 +568,7 @@ collect_system_metrics() {
 }
 
 collect_agent_rollup() {
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "resize" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
     if [ "$LOOP_ITERATION" -le 1 ]; then
       CLAUDE_COUNT=1
       CLAUDE_RSS_KB=131072
@@ -795,7 +879,7 @@ render_process_header() {
 render_process_tree() {
   render_process_header
 
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "resize" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
     sample_mem_bar_low="$(render_bar 1.6 "$MEM_BAR_WIDTH" utilization)"
     sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
@@ -1039,6 +1123,14 @@ render_dashboard() {
       }
       printf "2026-03-12 00:00:%02d CST", second;
     }')
+  elif [ "$TEST_MODE" = "resize" ]; then
+    now=$(awk -v iteration="$LOOP_ITERATION" 'BEGIN {
+      second = iteration - 1;
+      if (second < 0) {
+        second = 0;
+      }
+      printf "2026-03-12 00:00:%02d CST", second;
+    }')
   else
     now=$(date '+%F %T %Z')
   fi
@@ -1127,11 +1219,21 @@ render_frame_diff() {
 
 run_loop() {
   trap 'leave_live_screen' EXIT INT TERM HUP
+  trap 'RESIZE_PENDING=1' WINCH
   enter_live_screen
 
   while :; do
     LOOP_ITERATION=$((LOOP_ITERATION + 1))
+    previous_width=$PANEL_WIDTH
+    previous_height=$PANEL_HEIGHT
+    configure_layout
+    if [ "$RESIZE_PENDING" -eq 1 ] || [ "$PANEL_WIDTH" -ne "$previous_width" ] || [ "$PANEL_HEIGHT" -ne "$previous_height" ]; then
+      PREVIOUS_FRAME=""
+      RESIZE_PENDING=0
+    fi
+
     current_frame=$(run_once)
+    current_frame=$(clip_frame_to_terminal_height "$current_frame")
     printf '\033[H'
     render_frame_diff "$PREVIOUS_FRAME" "$current_frame"
     PREVIOUS_FRAME=$current_frame
@@ -1140,7 +1242,7 @@ run_loop() {
       break
     fi
 
-    sleep "$INTERVAL_SECONDS"
+    sleep_until_refresh "$INTERVAL_SECONDS"
   done
 }
 

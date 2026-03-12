@@ -345,6 +345,13 @@ title_refresh_output=$(
   sh "$SCRIPT" --interval 0.25
 )
 
+resize_output=$(
+  CODEX_TOP_FORCE_STYLE=1 \
+  CODEX_TOP_TEST_MODE=resize \
+  CODEX_TOP_TEST_CYCLES=2 \
+  sh "$SCRIPT" --interval 1
+)
+
 title_count=$(printf '%s' "$diff_output" | awk '
   BEGIN { count = 0 }
   {
@@ -390,6 +397,42 @@ fi
 
 if printf '%s' "$title_refresh_output" | grep -F "FPS: 4 ${reset_ansi}$(printf '\033[K')" >/dev/null 2>&1; then
   echo "FAIL: title refresh should not clear the line after repainting the FPS edge" >&2
+  exit 1
+fi
+
+resize_title_count=$(printf '%s' "$resize_output" | awk '
+  BEGIN { count = 0 }
+  {
+    count += gsub(/TERMUX SYSTEM SNAPSHOT/, "&")
+  }
+  END { print count }
+')
+
+if [ "$resize_title_count" -ne 2 ]; then
+  echo "FAIL: live mode should fully redraw the title when terminal dimensions change" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$resize_output" | grep -F "2026-03-12 00:00:00 CST" >/dev/null 2>&1; then
+  echo "FAIL: resize test mode should render the initial deterministic title timestamp" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$resize_output" | grep -F "2026-03-12 00:00:01 CST" >/dev/null 2>&1; then
+  echo "FAIL: resize test mode should render the resized deterministic title timestamp" >&2
+  exit 1
+fi
+
+resize_pid_count=$(printf '%s' "$resize_output" | awk '
+  BEGIN { count = 0 }
+  {
+    count += gsub(/PID    PPID/, "&")
+  }
+  END { print count }
+')
+
+if [ "$resize_pid_count" -ne 1 ]; then
+  echo "FAIL: live mode should clip the process table when terminal height shrinks" >&2
   exit 1
 fi
 
