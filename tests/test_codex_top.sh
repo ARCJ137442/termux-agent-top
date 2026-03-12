@@ -18,8 +18,20 @@ for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "PID"; do
   fi
 done
 
-if ! printf '%s\n' "$output" | awk 'length($0) > 116 { exit 1 }'; then
-  echo "FAIL: one-shot output should fit within the 116-column panel width" >&2
+if ! printf '%s\n' "$output" | awk 'length($0) > 300 { exit 1 }'; then
+  echo "FAIL: one-shot output should fit within the 300-column panel width" >&2
+  exit 1
+fi
+
+wide_output=$(COLUMNS=300 "$SCRIPT" --once)
+
+if ! printf '%s\n' "$wide_output" | awk 'length($0) > 300 { exit 1 }'; then
+  echo "FAIL: wide output should respect the 300-column panel limit" >&2
+  exit 1
+fi
+
+if [ "$(printf '%s\n' "$wide_output" | sed -n '1p' | awk '{ print length($0) }')" -ne 300 ]; then
+  echo "FAIL: wide output should expand the panel width up to 300 columns" >&2
   exit 1
 fi
 
@@ -42,12 +54,17 @@ for metric_label in "CLAUDE:" "CODEX:"; do
   fi
 done
 
-for forbidden in "codex-top.sh"; do
-  if printf '%s\n' "$output" | grep -F "$forbidden" >/dev/null 2>&1; then
-    echo "FAIL: monitor should hide its own helper subtree ('$forbidden')" >&2
-    exit 1
-  fi
-done
+path_output=$(CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
+
+if ! printf '%s\n' "$path_output" | grep -F "~/A137442/example/project/index.ts" >/dev/null 2>&1; then
+  echo "FAIL: output should compact home-directory paths to '~'" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$path_output" | grep -F "/data/data/com.termux/files/home/" >/dev/null 2>&1; then
+  echo "FAIL: compacted path output should not expose the full home prefix" >&2
+  exit 1
+fi
 
 live_output_file=$(mktemp)
 trap 'rm -f "$live_output_file"' EXIT INT TERM
@@ -99,6 +116,16 @@ title_count=$(printf '%s' "$diff_output" | awk '
 
 if [ "$title_count" -ne 1 ]; then
   echo "FAIL: diff mode should avoid redrawing unchanged title lines" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$diff_output" | grep -F "AgentsCPU:" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should include an AgentsCPU summary bar" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$diff_output" | grep -F "[######----]" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should render a 10-slot CPU utilization bar" >&2
   exit 1
 fi
 
