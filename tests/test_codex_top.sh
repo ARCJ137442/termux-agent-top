@@ -26,6 +26,14 @@ if ! printf '%s' "$title_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
   exit 1
 fi
 
+reverse_line_count=$(
+  printf '%s\n' "$styled_output" | awk -v reverse="$reverse_ansi" 'index($0, reverse) > 0 { count++ } END { print count + 0 }'
+)
+if [ "$reverse_line_count" -ne 2 ]; then
+  echo "FAIL: forced-style output should keep reverse video only on the title line and table header" >&2
+  exit 1
+fi
+
 table_header_line=$(printf '%s\n' "$styled_output" | grep -F "PID" | head -n 1)
 if ! printf '%s' "$table_header_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
   echo "FAIL: forced-style output should render the process table header in reverse video" >&2
@@ -38,8 +46,18 @@ if printf '%s' "$summary_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
   exit 1
 fi
 
+if printf '%s' "$summary_line" | grep -F "|" >/dev/null 2>&1; then
+  echo "FAIL: summary lines should not include panel-side bars in forced-style output" >&2
+  exit 1
+fi
+
 if printf '%s\n' "$styled_output" | grep -F "------ ------ -------" >/dev/null 2>&1; then
   echo "FAIL: forced-style output should remove the dashed separator below the table header" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$styled_output" | grep -F "+====" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should remove ASCII divider lines around the title and table" >&2
   exit 1
 fi
 

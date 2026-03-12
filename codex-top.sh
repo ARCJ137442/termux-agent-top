@@ -333,12 +333,6 @@ render_plain_header_line() {
   printf "+\n"
 }
 
-render_reverse_bar_line() {
-  printf '%s' "$ANSI_REVERSE"
-  repeat_char " " "$PANEL_WIDTH"
-  printf '%s\n' "$ANSI_RESET"
-}
-
 render_reverse_text_line() {
   content="$1"
   awk -v width="$PANEL_WIDTH" -v content="$content" -v reverse="$ANSI_REVERSE" -v reset="$ANSI_RESET" 'BEGIN {
@@ -352,14 +346,6 @@ render_reverse_text_line() {
     }
     printf "%s%-" width "s%s\n", reverse, text, reset;
   }'
-}
-
-render_title_separator_line() {
-  if [ "$STYLE_ENABLED" -eq 1 ]; then
-    render_reverse_bar_line
-  else
-    render_plain_header_line
-  fi
 }
 
 render_title_line() {
@@ -388,6 +374,40 @@ render_panel_line() {
 
 render_panel_lines_wrapped() {
   content="$1"
+  if [ "$STYLE_ENABLED" -eq 1 ]; then
+    printf '%s\n' "$content" | awk -v width="$PANEL_WIDTH" '
+      function emit_line(text) {
+        printf "%-" width "s\n", text;
+      }
+      {
+        remaining = $0;
+
+        while (length(remaining) > width) {
+          split_pos = 0;
+          for (i = width; i >= 1; i--) {
+            if (substr(remaining, i, 1) == " ") {
+              split_pos = i;
+              break;
+            }
+          }
+
+          if (split_pos == 0) {
+            emit_line(substr(remaining, 1, width));
+            remaining = substr(remaining, width + 1);
+          } else {
+            emit_line(substr(remaining, 1, split_pos - 1));
+            remaining = substr(remaining, split_pos + 1);
+          }
+
+          sub(/^ +/, "", remaining);
+        }
+
+        emit_line(remaining);
+      }
+    '
+    return
+  fi
+
   printf '%s\n' "$content" | awk -v width="$PANEL_INNER_WIDTH" '
     function emit_line(text) {
       printf "| %-" width "s |\n", text;
@@ -618,16 +638,24 @@ render_dashboard() {
   codex_rss_mib=$(to_mib "$CODEX_RSS_KB")
   data_free_gib=$(awk -v blocks="$DATA_AVAILABLE_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
 
-  render_title_separator_line
-  render_title_line "TERMUX SYSTEM SNAPSHOT  $now"
-  render_title_separator_line
+  if [ "$STYLE_ENABLED" -eq 1 ]; then
+    render_title_line "TERMUX SYSTEM SNAPSHOT  $now"
+  else
+    render_plain_header_line
+    render_title_line "TERMUX SYSTEM SNAPSHOT  $now"
+    render_plain_header_line
+  fi
   render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB [$(bar "$MEM_AVAILABLE_PERCENT" 12)]  SwapFree: $swap_free_mib MiB [$(bar "$SWAP_FREE_PERCENT" 12)]  /data: $DATA_USED_PERCENT% used"
   render_panel_lines_wrapped "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB    CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB    /data free: $data_free_gib GiB"
   render_panel_lines_wrapped "AgentsCPU: $AGENT_CPU_PERCENT [$(bar "$AGENT_CPU_PERCENT" "$CPU_BAR_WIDTH")]"
   render_panel_lines_wrapped "AgentsMem: $AGENT_MEM_PERCENT [$(bar "$AGENT_MEM_PERCENT" "$MEM_BAR_WIDTH")]"
-  render_plain_header_line
+  if [ "$STYLE_ENABLED" -eq 0 ]; then
+    render_plain_header_line
+  fi
   render_process_tree
-  render_plain_header_line
+  if [ "$STYLE_ENABLED" -eq 0 ]; then
+    render_plain_header_line
+  fi
 }
 
 enter_live_screen() {
