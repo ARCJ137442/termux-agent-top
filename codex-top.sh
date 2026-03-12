@@ -14,6 +14,9 @@ FORCE_STYLE="${CODEX_TOP_FORCE_STYLE:-0}"
 DEFAULT_PANEL_WIDTH=300
 MIN_PANEL_WIDTH=72
 SUMMARY_BAR_WIDTH=20
+RESOURCE_BAR_MAX_WIDTH=50
+RESOURCE_LABEL_WIDTH=6
+RESOURCE_PERCENT_FIELD_WIDTH=6
 CPU_BAR_WIDTH=10
 MEM_BAR_WIDTH=10
 PROCESS_MEM_BAR_FIELD_WIDTH=$MEM_BAR_WIDTH
@@ -27,6 +30,8 @@ STYLE_ENABLED=0
 RESIZE_PENDING=0
 ANSI_REVERSE="$(printf '\033[7m')"
 ANSI_RESET="$(printf '\033[0m')"
+ANSI_BOLD="$(printf '\033[1m')"
+ANSI_NO_BOLD="$(printf '\033[22m')"
 ANSI_BRIGHT_ORANGE="$(printf '\033[38;2;255;170;0m')"
 ANSI_BRIGHT_CLAUDE="$ANSI_BRIGHT_ORANGE"
 ANSI_BRIGHT_CODEX="$(printf '\033[38;2;110;235;255m')"
@@ -325,7 +330,7 @@ render_risk_badge() {
 
   if [ "$STYLE_ENABLED" -eq 1 ]; then
     risk_color=$(risk_color_code "$risk_level")
-    printf '%s%s RISK: %s %s' "$risk_color" "$ANSI_REVERSE" "$risk_level" "$ANSI_RESET"
+    printf '%s%sRISK: %s%s' "$risk_color" "$ANSI_BOLD" "$risk_level" "$ANSI_NO_BOLD"
     return
   fi
 
@@ -356,6 +361,63 @@ render_role_field() {
   padded_text=$(awk -v value="$role_text" -v width="$width" 'BEGIN { printf "%-*s", width, value }')
   color=$(role_color_code "$role_kind")
   render_colored_text "$padded_text" "$color"
+}
+
+render_text_field() {
+  value="$1"
+  width="$2"
+  awk -v value="$value" -v width="$width" 'BEGIN { printf "%-*s", width, value }'
+}
+
+render_right_text_field() {
+  value="$1"
+  width="$2"
+  awk -v value="$value" -v width="$width" 'BEGIN { printf "%*s", width, value }'
+}
+
+text_width() {
+  value="$1"
+  awk -v value="$value" 'BEGIN { print length(value) }'
+}
+
+render_resource_percent_field() {
+  percent="$1"
+  kind="$2"
+  width="$3"
+  padded_text=$(render_right_text_field "${percent}%" "$width")
+  color=$(bar_color_code "$percent" "$kind")
+  render_colored_text "$padded_text" "$color"
+}
+
+compute_resource_bar_width() {
+  available_width="$1"
+  reference_width="$2"
+  fixed_width=$((RESOURCE_LABEL_WIDTH + 1 + RESOURCE_PERCENT_FIELD_WIDTH + 2 + available_width + 2 + reference_width))
+  bar_width=$((PANEL_INNER_WIDTH - fixed_width))
+
+  if [ "$bar_width" -gt "$RESOURCE_BAR_MAX_WIDTH" ]; then
+    bar_width=$RESOURCE_BAR_MAX_WIDTH
+  fi
+
+  if [ "$bar_width" -lt 1 ]; then
+    bar_width=1
+  fi
+
+  printf '%s\n' "$bar_width"
+}
+
+render_resource_line() {
+  label="$1"
+  percent="$2"
+  kind="$3"
+  available_text="$4"
+  reference_text="$5"
+  bar_width="$6"
+  available_width="$7"
+  label_field=$(render_text_field "$label" "$RESOURCE_LABEL_WIDTH")
+  percent_field=$(render_resource_percent_field "$percent" "$kind" "$RESOURCE_PERCENT_FIELD_WIDTH")
+  available_field=$(render_text_field "$available_text" "$available_width")
+  render_single_panel_line "$label_field $(render_bar "$percent" "$bar_width" "$kind") $percent_field  $available_field  $reference_text"
 }
 
 to_mib() {
@@ -391,6 +453,93 @@ determine_risk_level() {
     }
     print "OK";
   }'
+}
+
+build_title_layout() {
+  width="$1"
+  left_text="$2"
+  fps_text="$3"
+  risk_text="$4"
+
+  awk -v width="$width" -v left="$left_text" -v fps="$fps_text" -v risk="$risk_text" 'BEGIN {
+    gap = "  ";
+    right = fps gap risk;
+
+    if (length(right) >= width) {
+      if (length(risk) >= width) {
+        if (width > 3) {
+          risk = substr(risk, 1, width - 3) "...";
+        } else {
+          risk = substr(risk, 1, width);
+        }
+        fps = "";
+        gap = "";
+      } else {
+        fps_width = width - length(risk) - length(gap);
+        if (fps_width <= 0) {
+          fps = "";
+          gap = "";
+        } else if (length(fps) > fps_width) {
+          if (fps_width > 3) {
+            fps = substr(fps, 1, fps_width - 3) "...";
+          } else {
+            fps = substr(fps, 1, fps_width);
+          }
+        }
+      }
+      right = fps;
+      if (fps != "" && risk != "") {
+        right = right gap risk;
+      } else if (risk != "") {
+        right = risk;
+      }
+    }
+
+    available = width - length(right);
+    left_display = "";
+    if (available > length(gap)) {
+      left_width = available - length(gap);
+      left_display = left;
+      if (length(left_display) > left_width) {
+        if (left_width > 3) {
+          left_display = substr(left_display, 1, left_width - 3) "...";
+        } else {
+          left_display = substr(left_display, 1, left_width);
+        }
+      }
+    }
+
+    left_padding = left_display;
+    if (left_display != "" && right != "") {
+      left_padding = left_display gap;
+    }
+
+    padding = width - length(left_padding) - length(right);
+    if (padding < 0) {
+      padding = 0;
+    }
+
+    printf "%s\t%d\t%s\t%s\n", left_display, padding, fps, risk;
+  }'
+}
+
+render_bold_title_text() {
+  text="$1"
+  title_label="TERMUX SYSTEM SNAPSHOT"
+
+  if [ "$STYLE_ENABLED" -eq 0 ]; then
+    printf '%s' "$text"
+    return
+  fi
+
+  case "$text" in
+    "$title_label"*)
+      printf '%s%s%s%s' "$ANSI_BOLD" "$title_label" "$ANSI_NO_BOLD" "${text#"$title_label"}"
+      ;;
+    *)
+      printf '%s%s%s' "$ANSI_BOLD" "$text" "$ANSI_NO_BOLD"
+      ;;
+  esac
 }
 
 clip_frame_to_terminal_height() {
@@ -444,6 +593,8 @@ collect_system_metrics() {
       MEM_TOTAL_KB=4194304
       MEM_FREE_KB=1048576
       MEM_AVAILABLE_KB=2097152
+      BUFFERS_KB=65536
+      CACHED_KB=524288
       SWAP_TOTAL_KB=2097152
       SWAP_FREE_KB=1048576
       DATA_BLOCKS=4194304
@@ -461,6 +612,8 @@ collect_system_metrics() {
       MEM_TOTAL_KB=4194304
       MEM_FREE_KB=1048576
       MEM_AVAILABLE_KB=1310720
+      BUFFERS_KB=65536
+      CACHED_KB=524288
       SWAP_TOTAL_KB=2097152
       SWAP_FREE_KB=1048576
       DATA_BLOCKS=4194304
@@ -478,6 +631,8 @@ collect_system_metrics() {
       MEM_TOTAL_KB=4194304
       MEM_FREE_KB=1048576
       MEM_AVAILABLE_KB=716800
+      BUFFERS_KB=65536
+      CACHED_KB=524288
       SWAP_TOTAL_KB=2097152
       SWAP_FREE_KB=1048576
       DATA_BLOCKS=4194304
@@ -495,6 +650,8 @@ collect_system_metrics() {
       MEM_TOTAL_KB=4194304
       MEM_FREE_KB=1048576
       MEM_AVAILABLE_KB=409600
+      BUFFERS_KB=65536
+      CACHED_KB=524288
       SWAP_TOTAL_KB=2097152
       SWAP_FREE_KB=1048576
       DATA_BLOCKS=4194304
@@ -512,6 +669,8 @@ collect_system_metrics() {
       MEM_TOTAL_KB=4194304
       MEM_FREE_KB=1048576
       MEM_AVAILABLE_KB=2097152
+      BUFFERS_KB=65536
+      CACHED_KB=524288
       SWAP_TOTAL_KB=2097152
       SWAP_FREE_KB=1048576
       DATA_BLOCKS=4194304
@@ -529,6 +688,8 @@ collect_system_metrics() {
       MEM_TOTAL_KB=4194304
       MEM_FREE_KB=1048576
       MEM_AVAILABLE_KB=2097152
+      BUFFERS_KB=65536
+      CACHED_KB=524288
       SWAP_TOTAL_KB=2097152
       SWAP_FREE_KB=1048576
       DATA_BLOCKS=4194304
@@ -549,6 +710,8 @@ collect_system_metrics() {
       /MemTotal:/ { print "MEM_TOTAL_KB=" $2 }
       /MemFree:/ { print "MEM_FREE_KB=" $2 }
       /MemAvailable:/ { print "MEM_AVAILABLE_KB=" $2 }
+      /^Buffers:/ { print "BUFFERS_KB=" $2 }
+      /^Cached:/ { print "CACHED_KB=" $2 }
       /SwapTotal:/ { print "SWAP_TOTAL_KB=" $2 }
       /SwapFree:/ { print "SWAP_FREE_KB=" $2 }
     ' /proc/meminfo
@@ -783,6 +946,43 @@ render_title_line() {
   fi
 }
 
+render_title_bar() {
+  now_text="$1"
+  fps_text="FPS: $FPS_LABEL"
+  risk_text="RISK: $RISK_LEVEL"
+  title_left_text="TERMUX SYSTEM SNAPSHOT  $now_text"
+
+  if [ "$STYLE_ENABLED" -eq 1 ]; then
+    title_layout=$(build_title_layout "$PANEL_WIDTH" "$title_left_text" "$fps_text" "$risk_text")
+    IFS='	' read -r left_display padding_count fps_display risk_display <<EOF
+$title_layout
+EOF
+    risk_badge=$(render_risk_badge "$RISK_LEVEL")
+
+    printf '%s' "$ANSI_REVERSE"
+    if [ -n "$left_display" ]; then
+      render_bold_title_text "$left_display"
+      if [ -n "$fps_display$risk_display" ]; then
+        printf '  '
+      fi
+    fi
+    repeat_char " " "$padding_count"
+    if [ -n "$fps_display" ]; then
+      printf '%s' "$fps_display"
+      if [ -n "$risk_display" ]; then
+        printf '  '
+      fi
+    fi
+    if [ -n "$risk_display" ]; then
+      printf '%s' "$risk_badge"
+    fi
+    printf '%s\n' "$ANSI_RESET"
+    return
+  fi
+
+  render_title_line "$title_left_text" "$fps_text  $risk_text"
+}
+
 render_panel_line() {
   content="$1"
   awk -v width="$PANEL_INNER_WIDTH" -v content="$content" 'BEGIN {
@@ -796,6 +996,17 @@ render_panel_line() {
     }
     printf "| %-" width "s |\n", text;
   }'
+}
+
+render_single_panel_line() {
+  content="$1"
+
+  if [ "$STYLE_ENABLED" -eq 1 ]; then
+    printf '%s\n' "$content"
+    return
+  fi
+
+  render_panel_line "$content"
 }
 
 render_panel_lines_wrapped() {
@@ -1135,26 +1346,51 @@ render_dashboard() {
     now=$(date '+%F %T %Z')
   fi
   mem_available_mib=$(to_mib "$MEM_AVAILABLE_KB")
-  mem_total_mib=$(to_mib "$MEM_TOTAL_KB")
+  buffers_mib=$(to_mib "$BUFFERS_KB")
   swap_free_mib=$(to_mib "$SWAP_FREE_KB")
-  swap_total_mib=$(to_mib "$SWAP_TOTAL_KB")
+  cached_mib=$(to_mib "$CACHED_KB")
   claude_rss_mib=$(to_mib "$CLAUDE_RSS_KB")
   codex_rss_mib=$(to_mib "$CODEX_RSS_KB")
+  data_available_gib=$(awk -v blocks="$DATA_AVAILABLE_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
   data_used_gib=$(awk -v blocks="$DATA_USED_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
+  mem_available_text="$mem_available_mib MiB free"
+  swap_available_text="$swap_free_mib MiB free"
+  data_available_text="$data_available_gib GiB free"
+  mem_reference_text="$buffers_mib MiB buffers"
+  swap_reference_text="$cached_mib MiB cached"
+  data_reference_text="$data_used_gib GiB used"
+  resource_available_width=$(text_width "$mem_available_text")
+  current_width=$(text_width "$swap_available_text")
+  if [ "$current_width" -gt "$resource_available_width" ]; then
+    resource_available_width=$current_width
+  fi
+  current_width=$(text_width "$data_available_text")
+  if [ "$current_width" -gt "$resource_available_width" ]; then
+    resource_available_width=$current_width
+  fi
+  resource_reference_width=$(text_width "$mem_reference_text")
+  current_width=$(text_width "$swap_reference_text")
+  if [ "$current_width" -gt "$resource_reference_width" ]; then
+    resource_reference_width=$current_width
+  fi
+  current_width=$(text_width "$data_reference_text")
+  if [ "$current_width" -gt "$resource_reference_width" ]; then
+    resource_reference_width=$current_width
+  fi
+  resource_bar_width=$(compute_resource_bar_width "$resource_available_width" "$resource_reference_width")
   claude_summary=$(render_colored_text "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB" "$(role_color_code claude)")
   codex_summary=$(render_colored_text "CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB" "$(role_color_code codex)")
-  risk_badge=$(render_risk_badge "$RISK_LEVEL")
-  title_right_text="FPS: $FPS_LABEL"
 
   if [ "$STYLE_ENABLED" -eq 1 ]; then
-    render_title_line "TERMUX SYSTEM SNAPSHOT  $now" "$title_right_text"
+    render_title_bar "$now"
   else
     render_plain_header_line
-    render_title_line "TERMUX SYSTEM SNAPSHOT  $now" "$title_right_text"
+    render_title_bar "$now"
     render_plain_header_line
   fi
-  render_panel_lines_wrapped "$risk_badge  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$MEM_AVAILABLE_PERCENT" availability "%")  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$SWAP_FREE_PERCENT" availability "%")"
-  render_panel_lines_wrapped "/data: $(render_bar "$DATA_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" disk_availability) $data_used_gib GiB used $(render_metric_text "$DATA_FREE_PERCENT" disk_availability "%") free"
+  render_resource_line "Mem:" "$MEM_AVAILABLE_PERCENT" availability "$mem_available_text" "$mem_reference_text" "$resource_bar_width" "$resource_available_width"
+  render_resource_line "Swap:" "$SWAP_FREE_PERCENT" availability "$swap_available_text" "$swap_reference_text" "$resource_bar_width" "$resource_available_width"
+  render_resource_line "/data:" "$DATA_FREE_PERCENT" disk_availability "$data_available_text" "$data_reference_text" "$resource_bar_width" "$resource_available_width"
   render_panel_lines_wrapped "$claude_summary    $codex_summary"
   render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%")"
   render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_MEM_PERCENT" utilization "%")"
@@ -1177,6 +1413,11 @@ leave_live_screen() {
     printf '\033[?25h\033[?1049l'
     LIVE_SCREEN_ACTIVE=0
   fi
+}
+
+handle_live_termination() {
+  leave_live_screen
+  exit 0
 }
 
 run_once() {
@@ -1218,7 +1459,8 @@ render_frame_diff() {
 }
 
 run_loop() {
-  trap 'leave_live_screen' EXIT INT TERM HUP
+  trap 'leave_live_screen' EXIT
+  trap 'handle_live_termination' INT TERM HUP
   trap 'RESIZE_PENDING=1' WINCH
   enter_live_screen
 

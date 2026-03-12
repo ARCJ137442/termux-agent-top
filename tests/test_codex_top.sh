@@ -11,6 +11,7 @@ fi
 
 output=$("$SCRIPT" --once)
 styled_output=$(CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once)
+plain_diff_output=$(CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
 styled_diff_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
 styled_risk_warn_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_warn "$SCRIPT" --once)
 styled_risk_hot_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_hot "$SCRIPT" --once)
@@ -22,12 +23,22 @@ styled_fps_fraction_output=$(COLUMNS=80 CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once
 fps_output=$(COLUMNS=90 "$SCRIPT" --once --interval 2)
 fps_zero_output=$("$SCRIPT" --once --interval 0)
 reverse_ansi=$(printf '\033[7m')
+bold_ansi=$(printf '\033[1m')
 green_ansi=$(printf '\033[92m')
 yellow_ansi=$(printf '\033[93m')
 red_ansi=$(printf '\033[91m')
 orange_ansi=$(printf '\033[38;2;255;170;0m')
 cyan_ansi=$(printf '\033[38;2;110;235;255m')
 reset_ansi=$(printf '\033[0m')
+resource_bar_50=$(awk 'BEGIN {
+  for (i = 0; i < 25; i++) {
+    printf "█";
+  }
+  for (i = 0; i < 25; i++) {
+    printf "░";
+  }
+  printf "\n";
+}')
 
 set +e
 invalid_interval_output=$("$SCRIPT" --once --interval -1 2>&1)
@@ -46,35 +57,42 @@ fi
 
 fps_title_line=$(printf '%s\n' "$fps_output" | sed -n '2p')
 case "$fps_title_line" in
-  *"FPS: 0.5 |")
+  *"FPS: 0.5  RISK: "*)
     ;;
   *)
-    echo "FAIL: title line should show right-aligned FPS for positive intervals" >&2
+    echo "FAIL: title line should show right-aligned FPS followed by RISK in plain output" >&2
     exit 1
     ;;
 esac
 
 fps_zero_title_line=$(printf '%s\n' "$fps_zero_output" | sed -n '2p')
 case "$fps_zero_title_line" in
-  *"FPS: max |")
+  *"FPS: max  RISK: "*)
     ;;
   *)
-    echo "FAIL: title line should show 'FPS: max' when interval is zero" >&2
+    echo "FAIL: title line should show 'FPS: max' followed by RISK in plain output" >&2
     exit 1
     ;;
 esac
 
-if ! printf '%s' "$styled_fps_integer_output" | grep -F "FPS: 4 ${reset_ansi}" >/dev/null 2>&1; then
-  echo "FAIL: styled title should keep a trailing reverse-video spacer after 'FPS: 4'" >&2
+styled_integer_title_line=$(printf '%s\n' "$styled_fps_integer_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
+if ! printf '%s' "$styled_integer_title_line" | grep -F "FPS: 4" >/dev/null 2>&1; then
+  echo "FAIL: styled title should keep the integer FPS value on the title bar" >&2
   exit 1
 fi
 
-if ! printf '%s' "$styled_fps_fraction_output" | grep -F "FPS: 0.125 ${reset_ansi}" >/dev/null 2>&1; then
-  echo "FAIL: styled title should keep a trailing reverse-video spacer after 'FPS: 0.125'" >&2
+if ! printf '%s' "$styled_integer_title_line" | grep -F "RISK:" >/dev/null 2>&1; then
+  echo "FAIL: styled title should place the RISK badge on the title bar" >&2
   exit 1
 fi
 
-for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
+styled_fraction_title_line=$(printf '%s\n' "$styled_fps_fraction_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
+if ! printf '%s' "$styled_fraction_title_line" | grep -F "FPS: 0.125" >/dev/null 2>&1; then
+  echo "FAIL: styled title should keep the fractional FPS value on the title bar" >&2
+  exit 1
+fi
+
+for pattern in "TERMUX SYSTEM SNAPSHOT" "Mem:" "Swap:" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
   if ! printf '%s\n' "$output" | grep -F "$pattern" >/dev/null 2>&1; then
     echo "FAIL: missing pattern '$pattern'" >&2
     exit 1
@@ -86,7 +104,43 @@ if ! printf '%s\n' "$output" | grep -F "█" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}██████████░░░░░░░░░░${reset_ansi}" >/dev/null 2>&1; then
+resource_bar_positions=$(
+  printf '%s\n' "$output" | awk '
+    $0 ~ /^\| Mem:/ {
+      mem = index($0, "█");
+      if (mem == 0) {
+        mem = index($0, "░");
+      }
+    }
+    $0 ~ /^\| Swap:/ {
+      swap = index($0, "█");
+      if (swap == 0) {
+        swap = index($0, "░");
+      }
+    }
+    $0 ~ /^\| \/data:/ {
+      data = index($0, "█");
+      if (data == 0) {
+        data = index($0, "░");
+      }
+    }
+    END {
+      printf "%d %d %d\n", mem, swap, data;
+    }
+  '
+)
+set -- $resource_bar_positions
+if [ "$1" -ne "$2" ] || [ "$1" -ne "$3" ]; then
+  echo "FAIL: Mem, Swap, and /data progress bars should start at the same column" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$plain_diff_output" | grep -F "$resource_bar_50" >/dev/null 2>&1; then
+  echo "FAIL: wide resource lines should expand to a 50-slot progress bar" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}███████████░░░░░░░░░${reset_ansi}" >/dev/null 2>&1; then
   echo "FAIL: forced diff output should color the full 20-slot summary bar with one ANSI color" >&2
   exit 1
 fi
@@ -136,13 +190,8 @@ if ! printf '%s' "$styled_diff_output" | grep -F "/data:" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "0.5 GiB used" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should show /data used GiB on the dedicated /data line" >&2
-  exit 1
-fi
-
-if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}75.0%${reset_ansi} free" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should show a colored /data free percentage on the dedicated /data line" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi} 75.0%${reset_ansi}  1.5 GiB free     0.5 GiB used" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should align /data with the Mem/Swap field order and spacing" >&2
   exit 1
 fi
 
@@ -161,12 +210,12 @@ if printf '%s' "$styled_diff_output" | grep -F "/data:" | grep -F "${orange_ansi
   exit 1
 fi
 
-if ! printf '%s' "$styled_disk_warn_output" | grep -F "${yellow_ansi}14.0%${reset_ansi} free" >/dev/null 2>&1; then
+if ! printf '%s' "$styled_disk_warn_output" | grep -F "${yellow_ansi} 14.0%${reset_ansi}" >/dev/null 2>&1; then
   echo "FAIL: /data free percentages below 15% should render yellow" >&2
   exit 1
 fi
 
-if ! printf '%s' "$styled_disk_hot_output" | grep -F "${red_ansi}4.0%${reset_ansi} free" >/dev/null 2>&1; then
+if ! printf '%s' "$styled_disk_hot_output" | grep -F "${red_ansi}  4.0%${reset_ansi}" >/dev/null 2>&1; then
   echo "FAIL: /data free percentages below 5% should render red" >&2
   exit 1
 fi
@@ -177,11 +226,16 @@ if ! printf '%s' "$title_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! printf '%s' "$title_line" | grep -F "${bold_ansi}TERMUX SYSTEM SNAPSHOT" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render the main title in bold" >&2
+  exit 1
+fi
+
 reverse_line_count=$(
   printf '%s\n' "$styled_output" | awk -v reverse="$reverse_ansi" 'index($0, reverse) > 0 { count++ } END { print count + 0 }'
 )
-if [ "$reverse_line_count" -ne 3 ]; then
-  echo "FAIL: forced-style output should keep reverse video only on the title line, risk badge, and table header" >&2
+if [ "$reverse_line_count" -ne 2 ]; then
+  echo "FAIL: forced-style output should keep reverse video only on the title line and table header" >&2
   exit 1
 fi
 
@@ -191,32 +245,70 @@ if ! printf '%s' "$table_header_line" | grep -F "$reverse_ansi" >/dev/null 2>&1;
   exit 1
 fi
 
-summary_line=$(printf '%s\n' "$styled_diff_output" | grep -F "RISK:" | head -n 1)
-if ! printf '%s' "$summary_line" | grep -F "${green_ansi}${reverse_ansi} RISK: OK ${reset_ansi}  MemAvailable:" >/dev/null 2>&1; then
-  echo "FAIL: forced-style output should render an isolated green reverse-video RISK badge for OK state" >&2
+ok_title_line=$(printf '%s\n' "$styled_diff_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
+if ! printf '%s' "$ok_title_line" | grep -F "${green_ansi}${bold_ansi}RISK: OK" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render a green bold RISK badge on the title bar for OK state" >&2
   exit 1
 fi
 
-if printf '%s' "$summary_line" | grep -F "|" >/dev/null 2>&1; then
-  echo "FAIL: summary lines should not include panel-side bars in forced-style output" >&2
+if ! printf '%s' "$ok_title_line" | awk 'index($0, "FPS:") > 0 && index($0, "RISK:") > index($0, "FPS:") { found = 1 } END { exit found ? 0 : 1 }'; then
+  echo "FAIL: title bar should place FPS to the left of the RISK badge" >&2
   exit 1
 fi
 
-warn_summary_line=$(printf '%s\n' "$styled_risk_warn_output" | grep -F "RISK:" | head -n 1)
-if ! printf '%s' "$warn_summary_line" | grep -F "${yellow_ansi}${reverse_ansi} RISK: WARN ${reset_ansi}  MemAvailable:" >/dev/null 2>&1; then
-  echo "FAIL: forced-style output should render an isolated yellow reverse-video RISK badge for WARN state" >&2
+mem_line=$(printf '%s\n' "$styled_diff_output" | awk '/^Mem:/ { print; exit }')
+if ! printf '%s' "$mem_line" | grep -F "2048.0 MiB free  64.0 MiB buffers" >/dev/null 2>&1; then
+  echo "FAIL: Mem line content should stay frozen apart from spacing alignment" >&2
   exit 1
 fi
 
-hot_summary_line=$(printf '%s\n' "$styled_risk_hot_output" | grep -F "RISK:" | head -n 1)
-if ! printf '%s' "$hot_summary_line" | grep -F "${orange_ansi}${reverse_ansi} RISK: HOT ${reset_ansi}  MemAvailable:" >/dev/null 2>&1; then
-  echo "FAIL: forced-style output should render an isolated orange reverse-video RISK badge for HOT state" >&2
+if ! printf '%s' "$mem_line" | grep -F "${green_ansi} 50.0%${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: Mem line should show a colored percentage immediately after the progress bar" >&2
   exit 1
 fi
 
-crit_summary_line=$(printf '%s\n' "$styled_risk_crit_output" | grep -F "RISK:" | head -n 1)
-if ! printf '%s' "$crit_summary_line" | grep -F "${red_ansi}${reverse_ansi} RISK: CRIT ${reset_ansi}  MemAvailable:" >/dev/null 2>&1; then
-  echo "FAIL: forced-style output should render an isolated red reverse-video RISK badge for CRIT state" >&2
+swap_line=$(printf '%s\n' "$styled_diff_output" | awk '/^Swap:/ { print; exit }')
+if ! printf '%s' "$swap_line" | grep -F "1024.0 MiB free  512.0 MiB cached" >/dev/null 2>&1; then
+  echo "FAIL: Swap line content should stay frozen apart from spacing alignment" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$swap_line" | grep -F "${green_ansi} 50.0%${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: Swap line should show a colored percentage immediately after the progress bar" >&2
+  exit 1
+fi
+
+data_line=$(printf '%s\n' "$styled_diff_output" | awk '/^\/data:/ { print; exit }')
+if ! printf '%s' "$data_line" | grep -F "1.5 GiB free     0.5 GiB used" >/dev/null 2>&1; then
+  echo "FAIL: /data line should match the Mem/Swap field ordering with free space followed by used space" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$styled_diff_output" | grep -F "MemAvailable:" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should replace the old MemAvailable summary label with a dedicated Mem line" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$styled_diff_output" | grep -F "SwapFree:" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should replace the old SwapFree summary label with a dedicated Swap line" >&2
+  exit 1
+fi
+
+warn_title_line=$(printf '%s\n' "$styled_risk_warn_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
+if ! printf '%s' "$warn_title_line" | grep -F "${yellow_ansi}${bold_ansi}RISK: WARN" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render a yellow bold RISK badge on the title bar for WARN state" >&2
+  exit 1
+fi
+
+hot_title_line=$(printf '%s\n' "$styled_risk_hot_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
+if ! printf '%s' "$hot_title_line" | grep -F "${orange_ansi}${bold_ansi}RISK: HOT" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render an orange bold RISK badge on the title bar for HOT state" >&2
+  exit 1
+fi
+
+crit_title_line=$(printf '%s\n' "$styled_risk_crit_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
+if ! printf '%s' "$crit_title_line" | grep -F "${red_ansi}${bold_ansi}RISK: CRIT" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render a red bold RISK badge on the title bar for CRIT state" >&2
   exit 1
 fi
 
@@ -286,7 +378,7 @@ for metric_label in "CLAUDE:" "CODEX:"; do
   fi
 done
 
-path_output=$(CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
+path_output=$plain_diff_output
 
 if ! printf '%s\n' "$path_output" | grep -F "~/A137442/example/project/index.ts" >/dev/null 2>&1; then
   echo "FAIL: output should compact home-directory paths to '~'" >&2
@@ -385,8 +477,8 @@ if ! printf '%s' "$diff_output" | grep -F "%MEM" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! printf '%s' "$diff_output" | grep -F "$(printf '\033[6;1H')" >/dev/null 2>&1; then
-  echo "FAIL: diff mode should reposition cursor to the updated agent summary row" >&2
+if ! printf '%s' "$diff_output" | grep -F "$(printf '\033[7;1H')" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should reposition cursor to the updated agent summary row after the new Mem/Swap layout" >&2
   exit 1
 fi
 
@@ -395,7 +487,7 @@ if ! printf '%s' "$title_refresh_output" | grep -F "$(printf '\033[1;1H\033[2K')
   exit 1
 fi
 
-if printf '%s' "$title_refresh_output" | grep -F "FPS: 4 ${reset_ansi}$(printf '\033[K')" >/dev/null 2>&1; then
+if printf '%s' "$title_refresh_output" | grep -F "FPS: 4$(printf '\033[K')" >/dev/null 2>&1; then
   echo "FAIL: title refresh should not clear the line after repainting the FPS edge" >&2
   exit 1
 fi
