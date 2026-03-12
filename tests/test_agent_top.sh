@@ -169,8 +169,8 @@ if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}█████�
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}55.0%${reset_ansi}" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should color summary percentages with the same color as their bars" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}55.0%  0.55 cores${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should append and color core-equivalent utilization after the AgentsCPU percentage" >&2
   exit 1
 fi
 
@@ -384,6 +384,11 @@ if ! printf '%s\n' "$styled_risk_cpu_hot_output" | grep -F "AgentsCPU:" | grep -
   exit 1
 fi
 
+if ! printf '%s\n' "$styled_risk_cpu_hot_output" | grep -F "AgentsCPU:" | grep -F "1.50 cores" >/dev/null 2>&1; then
+  echo "FAIL: CPU-driven HOT test mode should append core-equivalent utilization after AgentsCPU percent" >&2
+  exit 1
+fi
+
 cpu_crit_title_line=$(printf '%s\n' "$styled_risk_cpu_crit_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
 if ! printf '%s' "$cpu_crit_title_line" | grep -F "${red_ansi}${bold_ansi}RISK: CRIT" >/dev/null 2>&1; then
   echo "FAIL: AgentsCPU values above 200% should elevate RISK to CRIT even when memory and disk are healthy" >&2
@@ -392,6 +397,11 @@ fi
 
 if ! printf '%s\n' "$styled_risk_cpu_crit_output" | grep -F "AgentsCPU:" | grep -F "250.0%" >/dev/null 2>&1; then
   echo "FAIL: CPU-driven CRIT test mode should expose an AgentsCPU sample above 200%" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$styled_risk_cpu_crit_output" | grep -F "AgentsCPU:" | grep -F "2.50 cores" >/dev/null 2>&1; then
+  echo "FAIL: CPU-driven CRIT test mode should append core-equivalent utilization after AgentsCPU percent" >&2
   exit 1
 fi
 

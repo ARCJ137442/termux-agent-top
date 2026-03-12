@@ -1571,6 +1571,7 @@ render_dashboard() {
   mem_reference_text="$buffers_mib MiB buffers"
   swap_reference_text="$cached_mib MiB cached"
   data_reference_text="$data_used_gib GiB used"
+  agent_cpu_cores=$(awk -v percent="$AGENT_CPU_PERCENT" 'BEGIN { printf "%.2f", percent / 100.0 }')
   resource_available_width=$(text_width "$mem_available_text")
   current_width=$(text_width "$swap_available_text")
   if [ "$current_width" -gt "$resource_available_width" ]; then
@@ -1605,7 +1606,7 @@ render_dashboard() {
   render_resource_line "Swap:" "$SWAP_FREE_PERCENT" availability "$swap_available_text" "$swap_reference_text" "$resource_bar_width" "$resource_available_width"
   render_resource_line "/data:" "$DATA_FREE_PERCENT" disk_availability "$data_available_text" "$data_reference_text" "$resource_bar_width" "$resource_available_width"
   render_panel_lines_wrapped "$claude_summary    $codex_summary"
-  render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%")"
+  render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%  ${agent_cpu_cores} cores")"
   render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_MEM_PERCENT" utilization "%")"
   if [ "$STYLE_ENABLED" -eq 0 ]; then
     render_plain_header_line
