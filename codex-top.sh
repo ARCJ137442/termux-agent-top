@@ -38,6 +38,7 @@ ANSI_BRIGHT_CODEX="$(printf '\033[38;2;110;235;255m')"
 ANSI_BRIGHT_RED="$(printf '\033[91m')"
 ANSI_BRIGHT_GREEN="$(printf '\033[92m')"
 ANSI_BRIGHT_YELLOW="$(printf '\033[93m')"
+ANSI_GREEN="$(printf '\033[32m')"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -286,6 +287,33 @@ role_color_code() {
   esac
 }
 
+task_color_code() {
+  task_kind="$1"
+
+  if [ "$STYLE_ENABLED" -eq 0 ]; then
+    printf '%s' ""
+    return
+  fi
+
+  case "$task_kind" in
+    running)
+      printf '%s' "$ANSI_BRIGHT_GREEN"
+      ;;
+    sleeping)
+      printf '%s' "$ANSI_BRIGHT_ORANGE"
+      ;;
+    stopped)
+      printf '%s' "$ANSI_BRIGHT_RED"
+      ;;
+    zombie)
+      printf '%s' "$ANSI_GREEN"
+      ;;
+    *)
+      printf '%s' ""
+      ;;
+  esac
+}
+
 render_colored_text() {
   text="$1"
   color="$2"
@@ -418,6 +446,117 @@ render_resource_line() {
   percent_field=$(render_resource_percent_field "$percent" "$kind" "$RESOURCE_PERCENT_FIELD_WIDTH")
   available_field=$(render_text_field "$available_text" "$available_width")
   render_single_panel_line "$label_field $(render_bar "$percent" "$bar_width" "$kind") $percent_field  $available_field  $reference_text"
+}
+
+render_tasks_line() {
+  tasks_total="$1"
+  tasks_running="$2"
+  tasks_sleeping="$3"
+  tasks_stopped="$4"
+  tasks_zombie="$5"
+  tasks_label="Tasks:"
+  tasks_total_text="$tasks_total total"
+  label_width=$(text_width "$tasks_label")
+  total_width=$(text_width "$tasks_total_text")
+  tasks_bar_width=$((PANEL_INNER_WIDTH - label_width - 1 - 2 - total_width))
+
+  if [ "$tasks_bar_width" -gt "$tasks_total" ]; then
+    tasks_bar_width=$tasks_total
+  fi
+
+  if [ "$tasks_bar_width" -lt 0 ]; then
+    tasks_bar_width=0
+  fi
+
+  if [ "$tasks_bar_width" -eq 0 ]; then
+    render_single_panel_line "$tasks_label  $tasks_total_text"
+    return
+  fi
+
+  task_widths=$(
+    awk -v total="$tasks_total" -v bar_width="$tasks_bar_width" -v running="$tasks_running" -v sleeping="$tasks_sleeping" -v stopped="$tasks_stopped" -v zombie="$tasks_zombie" 'BEGIN {
+      counts[1] = running;
+      counts[2] = sleeping;
+      counts[3] = stopped;
+      counts[4] = zombie;
+
+      if (total <= 0 || bar_width <= 0) {
+        print "0 0 0 0";
+        exit;
+      }
+
+      assigned = 0;
+      for (i = 1; i <= 4; i++) {
+        raw = counts[i] * bar_width / total;
+        widths[i] = int(raw);
+        remainders[i] = raw - widths[i];
+        assigned += widths[i];
+      }
+
+      while (assigned < bar_width) {
+        best = 1;
+        for (i = 2; i <= 4; i++) {
+          if (remainders[i] > remainders[best]) {
+            best = i;
+          }
+        }
+        widths[best]++;
+        remainders[best] = -1;
+        assigned++;
+      }
+
+      printf "%d %d %d %d\n", widths[1], widths[2], widths[3], widths[4];
+    }'
+  )
+  set -- $task_widths
+  running_width="${1:-0}"
+  sleeping_width="${2:-0}"
+  stopped_width="${3:-0}"
+  zombie_width="${4:-0}"
+  tasks_bar=""
+
+  for task_kind in running sleeping stopped zombie; do
+    case "$task_kind" in
+      running)
+        segment_width="$running_width"
+        segment_label="running"
+        ;;
+      sleeping)
+        segment_width="$sleeping_width"
+        segment_label="sleeping"
+        ;;
+      stopped)
+        segment_width="$stopped_width"
+        segment_label="stopped"
+        ;;
+      zombie)
+        segment_width="$zombie_width"
+        segment_label="zombie"
+        ;;
+    esac
+
+    if [ "$segment_width" -le 0 ]; then
+      continue
+    fi
+
+    segment_text=$(
+      awk -v value="$segment_label" -v width="$segment_width" 'BEGIN {
+        text = value;
+        if (length(text) > width) {
+          text = substr(text, 1, width);
+        }
+        printf "%-" width "s", text;
+      }'
+    )
+
+    if [ "$STYLE_ENABLED" -eq 1 ]; then
+      tasks_bar="${tasks_bar}$(printf '%s%s%s%s' "$(task_color_code "$task_kind")" "$ANSI_REVERSE" "$segment_text" "$ANSI_RESET")"
+    else
+      tasks_bar="${tasks_bar}${segment_text}"
+    fi
+  done
+
+  render_single_panel_line "$tasks_label $tasks_bar  $tasks_total_text"
 }
 
 to_mib() {
@@ -857,6 +996,47 @@ collect_agent_rollup() {
         } else {
           printf "AGENT_MEM_PERCENT=0.0\n";
         }
+      }
+    '
+  )"
+}
+
+collect_task_metrics() {
+  case "$TEST_MODE" in
+    diff|diff_title|resize|risk_warn|risk_hot|risk_crit|disk_warn|disk_hot)
+      TASK_RUNNING_COUNT=2
+      TASK_SLEEPING_COUNT=34
+      TASK_STOPPED_COUNT=1
+      TASK_ZOMBIE_COUNT=1
+      TASK_TOTAL_COUNT=38
+      return
+      ;;
+  esac
+
+  eval "$(
+    ps -e -o stat= | awk '
+      /^[[:space:]]*$/ {
+        next;
+      }
+      {
+        state = substr($1, 1, 1);
+        total++;
+        if (state == "R") {
+          running++;
+        } else if (state == "T" || state == "t") {
+          stopped++;
+        } else if (state == "Z") {
+          zombie++;
+        } else {
+          sleeping++;
+        }
+      }
+      END {
+        printf "TASK_RUNNING_COUNT=%d\n", running + 0;
+        printf "TASK_SLEEPING_COUNT=%d\n", sleeping + 0;
+        printf "TASK_STOPPED_COUNT=%d\n", stopped + 0;
+        printf "TASK_ZOMBIE_COUNT=%d\n", zombie + 0;
+        printf "TASK_TOTAL_COUNT=%d\n", total + 0;
       }
     '
   )"
@@ -1388,6 +1568,7 @@ render_dashboard() {
     render_title_bar "$now"
     render_plain_header_line
   fi
+  render_tasks_line "$TASK_TOTAL_COUNT" "$TASK_RUNNING_COUNT" "$TASK_SLEEPING_COUNT" "$TASK_STOPPED_COUNT" "$TASK_ZOMBIE_COUNT"
   render_resource_line "Mem:" "$MEM_AVAILABLE_PERCENT" availability "$mem_available_text" "$mem_reference_text" "$resource_bar_width" "$resource_available_width"
   render_resource_line "Swap:" "$SWAP_FREE_PERCENT" availability "$swap_available_text" "$swap_reference_text" "$resource_bar_width" "$resource_available_width"
   render_resource_line "/data:" "$DATA_FREE_PERCENT" disk_availability "$data_available_text" "$data_reference_text" "$resource_bar_width" "$resource_available_width"
@@ -1423,6 +1604,7 @@ handle_live_termination() {
 run_once() {
   collect_system_metrics
   collect_agent_rollup
+  collect_task_metrics
   render_dashboard
 }
 

@@ -27,6 +27,7 @@ bold_ansi=$(printf '\033[1m')
 green_ansi=$(printf '\033[92m')
 yellow_ansi=$(printf '\033[93m')
 red_ansi=$(printf '\033[91m')
+dark_green_ansi=$(printf '\033[32m')
 orange_ansi=$(printf '\033[38;2;255;170;0m')
 cyan_ansi=$(printf '\033[38;2;110;235;255m')
 reset_ansi=$(printf '\033[0m')
@@ -92,12 +93,33 @@ if ! printf '%s' "$styled_fraction_title_line" | grep -F "FPS: 0.125" >/dev/null
   exit 1
 fi
 
-for pattern in "TERMUX SYSTEM SNAPSHOT" "Mem:" "Swap:" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
+for pattern in "TERMUX SYSTEM SNAPSHOT" "Tasks:" "Mem:" "Swap:" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
   if ! printf '%s\n' "$output" | grep -F "$pattern" >/dev/null 2>&1; then
     echo "FAIL: missing pattern '$pattern'" >&2
     exit 1
   fi
 done
+
+plain_tasks_line=$(printf '%s\n' "$plain_diff_output" | awk '/Tasks:/ { print; exit }')
+if ! printf '%s' "$plain_tasks_line" | grep -F "Tasks:" >/dev/null 2>&1; then
+  echo "FAIL: plain diff output should render a dedicated Tasks line" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$plain_tasks_line" | grep -F "sleeping" >/dev/null 2>&1; then
+  echo "FAIL: plain diff Tasks line should preserve readable task-state labels" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$plain_tasks_line" | grep -F "38 total" >/dev/null 2>&1; then
+  echo "FAIL: plain diff Tasks line should show the total task count at the end" >&2
+  exit 1
+fi
+
+if printf '%s' "$plain_tasks_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
+  echo "FAIL: plain diff Tasks line should not emit reverse-video ANSI sequences" >&2
+  exit 1
+fi
 
 if ! printf '%s\n' "$output" | grep -F "█" >/dev/null 2>&1; then
   echo "FAIL: output should render block-style utilization bars" >&2
@@ -234,14 +256,51 @@ fi
 reverse_line_count=$(
   printf '%s\n' "$styled_output" | awk -v reverse="$reverse_ansi" 'index($0, reverse) > 0 { count++ } END { print count + 0 }'
 )
-if [ "$reverse_line_count" -ne 2 ]; then
-  echo "FAIL: forced-style output should keep reverse video only on the title line and table header" >&2
+if [ "$reverse_line_count" -ne 3 ]; then
+  echo "FAIL: forced-style output should keep reverse video on the title line, Tasks line, and table header only" >&2
   exit 1
 fi
 
 table_header_line=$(printf '%s\n' "$styled_output" | grep -F "PID" | head -n 1)
 if ! printf '%s' "$table_header_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
   echo "FAIL: forced-style output should render the process table header in reverse video" >&2
+  exit 1
+fi
+
+styled_tasks_line=$(printf '%s\n' "$styled_diff_output" | sed -n '2p')
+if ! printf '%s' "$styled_tasks_line" | grep -F "Tasks:" >/dev/null 2>&1; then
+  echo "FAIL: styled output should render Tasks immediately below the title bar" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_tasks_line" | grep -F "${green_ansi}${reverse_ansi}ru${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: Tasks line should render running tasks as a bright-green reverse segment with truncated text when narrow" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_tasks_line" | grep -F "${orange_ansi}${reverse_ansi}sleeping" >/dev/null 2>&1; then
+  echo "FAIL: Tasks line should render sleeping tasks as a bright-orange reverse segment" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_tasks_line" | grep -F "${red_ansi}${reverse_ansi}s${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: Tasks line should render stopped tasks as a bright-red reverse segment" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_tasks_line" | grep -F "${dark_green_ansi}${reverse_ansi}z${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: Tasks line should render zombie tasks as a dark-green reverse segment" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_tasks_line" | grep -F "38 total" >/dev/null 2>&1; then
+  echo "FAIL: Tasks line should end with the total task count" >&2
+  exit 1
+fi
+
+styled_mem_after_tasks=$(printf '%s\n' "$styled_diff_output" | sed -n '3p')
+if ! printf '%s' "$styled_mem_after_tasks" | grep -F "Mem:" >/dev/null 2>&1; then
+  echo "FAIL: Mem should move below the new Tasks line" >&2
   exit 1
 fi
 
@@ -477,7 +536,7 @@ if ! printf '%s' "$diff_output" | grep -F "%MEM" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! printf '%s' "$diff_output" | grep -F "$(printf '\033[7;1H')" >/dev/null 2>&1; then
+if ! printf '%s' "$diff_output" | grep -F "$(printf '\033[8;1H')" >/dev/null 2>&1; then
   echo "FAIL: diff mode should reposition cursor to the updated agent summary row after the new Mem/Swap layout" >&2
   exit 1
 fi
