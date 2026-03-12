@@ -12,11 +12,48 @@ fi
 output=$("$SCRIPT" --once)
 styled_output=$(CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once)
 styled_diff_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
+fps_output=$(COLUMNS=90 "$SCRIPT" --once --interval 2)
+fps_zero_output=$("$SCRIPT" --once --interval 0)
 reverse_ansi=$(printf '\033[7m')
 green_ansi=$(printf '\033[92m')
 orange_ansi=$(printf '\033[38;2;255;170;0m')
 cyan_ansi=$(printf '\033[38;2;110;235;255m')
 reset_ansi=$(printf '\033[0m')
+
+set +e
+invalid_interval_output=$("$SCRIPT" --once --interval -1 2>&1)
+invalid_interval_status=$?
+set -e
+
+if [ "$invalid_interval_status" -eq 0 ]; then
+  echo "FAIL: negative interval values should be rejected" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$invalid_interval_output" | grep -F "interval must be a non-negative number" >/dev/null 2>&1; then
+  echo "FAIL: negative interval rejection should explain the constraint" >&2
+  exit 1
+fi
+
+fps_title_line=$(printf '%s\n' "$fps_output" | sed -n '2p')
+case "$fps_title_line" in
+  *"FPS: 0.5 |")
+    ;;
+  *)
+    echo "FAIL: title line should show right-aligned FPS for positive intervals" >&2
+    exit 1
+    ;;
+esac
+
+fps_zero_title_line=$(printf '%s\n' "$fps_zero_output" | sed -n '2p')
+case "$fps_zero_title_line" in
+  *"FPS: max |")
+    ;;
+  *)
+    echo "FAIL: title line should show 'FPS: max' when interval is zero" >&2
+    exit 1
+    ;;
+esac
 
 for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
   if ! printf '%s\n' "$output" | grep -F "$pattern" >/dev/null 2>&1; then

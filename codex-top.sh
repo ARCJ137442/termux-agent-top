@@ -2,6 +2,7 @@
 set -eu
 
 INTERVAL_SECONDS=2
+FPS_LABEL=""
 RUN_ONCE=0
 MONITOR_PID=$$
 LIVE_SCREEN_ACTIVE=0
@@ -46,6 +47,31 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+if ! awk -v interval="$INTERVAL_SECONDS" 'BEGIN {
+  if (interval ~ /^([0-9]+([.][0-9]*)?|[.][0-9]+)$/ && interval + 0 >= 0) {
+    exit 0;
+  }
+  exit 1;
+}'; then
+  echo "interval must be a non-negative number" >&2
+  exit 1
+fi
+
+FPS_LABEL=$(
+  awk -v interval="$INTERVAL_SECONDS" 'BEGIN {
+    if (interval + 0 == 0) {
+      print "max";
+      exit;
+    }
+
+    fps = 1.0 / interval;
+    text = sprintf("%.3f", fps);
+    sub(/0+$/, "", text);
+    sub(/[.]$/, "", text);
+    print text;
+  }'
+)
 
 if [ "$FORCE_STYLE" = "1" ] || [ -t 1 ]; then
   STYLE_ENABLED=1
@@ -462,7 +488,58 @@ render_reverse_text_line() {
 }
 
 render_title_line() {
-  content="$1"
+  left_text="$1"
+  right_text="${2:-}"
+  content="$left_text"
+
+  if [ -n "$right_text" ]; then
+    if [ "$STYLE_ENABLED" -eq 1 ]; then
+      title_width="$PANEL_WIDTH"
+    else
+      title_width="$PANEL_INNER_WIDTH"
+    fi
+
+    content=$(
+      awk -v width="$title_width" -v left="$left_text" -v right="$right_text" 'BEGIN {
+        gap = "  ";
+        if (length(right) >= width) {
+          if (width > 3) {
+            print substr(right, 1, width - 3) "...";
+          } else {
+            print substr(right, 1, width);
+          }
+          exit;
+        }
+
+        available = width - length(right);
+        left_display = "";
+        if (available > length(gap)) {
+          left_width = available - length(gap);
+          left_display = left;
+          if (length(left_display) > left_width) {
+            if (left_width > 3) {
+              left_display = substr(left_display, 1, left_width - 3) "...";
+            } else {
+              left_display = substr(left_display, 1, left_width);
+            }
+          }
+          left_display = left_display gap;
+        }
+
+        padding = width - length(left_display) - length(right);
+        if (padding < 0) {
+          padding = 0;
+        }
+
+        printf "%s", left_display;
+        for (i = 0; i < padding; i++) {
+          printf " ";
+        }
+        printf "%s\n", right;
+      }'
+    )
+  fi
+
   if [ "$STYLE_ENABLED" -eq 1 ]; then
     render_reverse_text_line "$content"
   else
@@ -814,12 +891,13 @@ render_dashboard() {
   data_free_gib=$(awk -v blocks="$DATA_AVAILABLE_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
   claude_summary=$(render_colored_text "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB" "$(role_color_code claude)")
   codex_summary=$(render_colored_text "CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB" "$(role_color_code codex)")
+  title_right_text="FPS: $FPS_LABEL"
 
   if [ "$STYLE_ENABLED" -eq 1 ]; then
-    render_title_line "TERMUX SYSTEM SNAPSHOT  $now"
+    render_title_line "TERMUX SYSTEM SNAPSHOT  $now" "$title_right_text"
   else
     render_plain_header_line
-    render_title_line "TERMUX SYSTEM SNAPSHOT  $now"
+    render_title_line "TERMUX SYSTEM SNAPSHOT  $now" "$title_right_text"
     render_plain_header_line
   fi
   render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$MEM_AVAILABLE_PERCENT" availability "%")  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$SWAP_FREE_PERCENT" availability "%")  /data free: $data_free_gib GiB $(render_bar "$DATA_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$DATA_FREE_PERCENT" availability "%")  /data: $DATA_USED_PERCENT% used"
