@@ -35,13 +35,13 @@ This script targets that workflow directly.
 Run a one-shot snapshot:
 
 ```sh
-./codex-top.sh --once
+./agent-top.sh --once
 ```
 
 Run a live view:
 
 ```sh
-./codex-top.sh
+./agent-top.sh
 ```
 
 Live mode switches to the terminal's alternate screen, redraws in place, and restores the previous screen when it exits. This reduces visible flicker compared with clearing the whole screen each refresh.
@@ -49,7 +49,7 @@ Live mode switches to the terminal's alternate screen, redraws in place, and res
 Change refresh interval:
 
 ```sh
-./codex-top.sh --interval 5
+./agent-top.sh --interval 5
 ```
 
 ## Requirements

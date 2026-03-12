@@ -2,7 +2,7 @@
 set -eu
 
 ROOT="/data/data/com.termux/files/home/A137442/termux-tools"
-SCRIPT="$ROOT/codex-top.sh"
+SCRIPT="$ROOT/agent-top.sh"
 
 if [ ! -x "$SCRIPT" ]; then
   echo "FAIL: missing executable script at $SCRIPT" >&2
@@ -611,4 +611,4 @@ if [ "$resize_pid_count" -ne 1 ]; then
   exit 1
 fi
 
-echo "PASS: codex-top snapshot and live refresh behavior look correct"
+echo "PASS: agent-top snapshot and live refresh behavior look correct"
