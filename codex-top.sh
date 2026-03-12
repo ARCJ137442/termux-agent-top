@@ -9,6 +9,7 @@ LOOP_ITERATION=0
 PREVIOUS_FRAME=""
 TEST_MODE="${CODEX_TOP_TEST_MODE:-}"
 TEST_CYCLES="${CODEX_TOP_TEST_CYCLES:-0}"
+FORCE_STYLE="${CODEX_TOP_FORCE_STYLE:-0}"
 DEFAULT_PANEL_WIDTH=300
 MIN_PANEL_WIDTH=72
 CPU_BAR_WIDTH=10
@@ -19,6 +20,9 @@ PROCESS_FIXED_WIDTH=$((6 + 1 + 6 + 1 + 7 + 1 + 6 + 1 + PROCESS_MEM_BAR_FIELD_WID
 PANEL_WIDTH=$DEFAULT_PANEL_WIDTH
 PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
 PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
+STYLE_ENABLED=0
+ANSI_REVERSE="$(printf '\033[7m')"
+ANSI_RESET="$(printf '\033[0m')"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -36,6 +40,10 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+if [ "$FORCE_STYLE" = "1" ] || [ -t 1 ]; then
+  STYLE_ENABLED=1
+fi
 
 detect_terminal_columns() {
   if [ -n "${COLUMNS:-}" ]; then
@@ -319,10 +327,48 @@ collect_agent_rollup() {
   )"
 }
 
-render_header_line() {
+render_plain_header_line() {
   printf "+"
   repeat_char "=" "$((PANEL_WIDTH - 2))"
   printf "+\n"
+}
+
+render_reverse_bar_line() {
+  printf '%s' "$ANSI_REVERSE"
+  repeat_char " " "$PANEL_WIDTH"
+  printf '%s\n' "$ANSI_RESET"
+}
+
+render_reverse_text_line() {
+  content="$1"
+  awk -v width="$PANEL_WIDTH" -v content="$content" -v reverse="$ANSI_REVERSE" -v reset="$ANSI_RESET" 'BEGIN {
+    text = content;
+    if (length(text) > width) {
+      if (width > 3) {
+        text = substr(text, 1, width - 3) "...";
+      } else {
+        text = substr(text, 1, width);
+      }
+    }
+    printf "%s%-" width "s%s\n", reverse, text, reset;
+  }'
+}
+
+render_title_separator_line() {
+  if [ "$STYLE_ENABLED" -eq 1 ]; then
+    render_reverse_bar_line
+  else
+    render_plain_header_line
+  fi
+}
+
+render_title_line() {
+  content="$1"
+  if [ "$STYLE_ENABLED" -eq 1 ]; then
+    render_reverse_text_line "$content"
+  else
+    render_panel_line "$content"
+  fi
 }
 
 render_panel_line() {
@@ -375,15 +421,24 @@ render_panel_lines_wrapped() {
   '
 }
 
+render_process_header() {
+  header_line=$(printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %-*s' "PID" "PPID" "RSS_KB" "%MEM" "$PROCESS_MEM_BAR_FIELD_WIDTH" "MEM" "%CPU" "$PROCESS_CPU_BAR_FIELD_WIDTH" "CPU" "ROLE" "$PROCESS_COMMAND_WIDTH" "COMMAND")
+  if [ "$STYLE_ENABLED" -eq 1 ]; then
+    render_reverse_text_line "$header_line"
+  else
+    printf '%s\n' "$header_line"
+  fi
+}
+
 render_process_tree() {
+  render_process_header
+
   if [ "$TEST_MODE" = "diff" ]; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
     sample_mem_bar_low="[$(bar 1.6 "$MEM_BAR_WIDTH")]"
     sample_mem_bar_mid="[$(bar 2.3 "$MEM_BAR_WIDTH")]"
     sample_bar_low="[$(bar 12.5 "$CPU_BAR_WIDTH")]"
     sample_bar_mid="[$(bar 55 "$CPU_BAR_WIDTH")]"
-    printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' PID PPID RSS_KB %MEM "$PROCESS_MEM_BAR_FIELD_WIDTH" MEM %CPU "$PROCESS_CPU_BAR_FIELD_WIDTH" CPU ROLE COMMAND
-    printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' ------ ------ ------- ------ "$PROCESS_MEM_BAR_FIELD_WIDTH" ------------ ------ "$PROCESS_CPU_BAR_FIELD_WIDTH" ------------ --------- --------------------------------------------------------
     printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' 1234 1 65536 1.6 "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" 12.5 "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" CLAUDE claude
     printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' 2345 1 98304 2.3 "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" 55.0 "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" CODEX "node $sample_path"
     return
@@ -394,13 +449,6 @@ render_process_tree() {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
       return s;
-    }
-    function repeat_str(char, count,    out, i) {
-      out = "";
-      for (i = 0; i < count; i++) {
-        out = out char;
-      }
-      return out;
     }
     function is_agent_root(pid) {
       return comm[pid] == "claude" || comm[pid] == "codex";
@@ -545,8 +593,6 @@ render_process_tree() {
       mark_hidden_chain(monitor_pid);
       mark_hidden_descendants(monitor_pid);
 
-      printf "%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %-*s\n", "PID", "PPID", "RSS_KB", "%MEM", mem_bar_field_width, "MEM", "%CPU", cpu_bar_field_width, "CPU", "ROLE", command_width, "COMMAND";
-      printf "%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n", "------", "------", "-------", "------", mem_bar_field_width, repeat_str("-", mem_bar_field_width), "------", cpu_bar_field_width, repeat_str("-", cpu_bar_field_width), "---------", repeat_str("-", command_width);
       for (i = 1; i <= root_count; i++) {
         pid_val = root_order[i];
         if (!hidden[pid_val] && !printed[pid_val]) {
@@ -572,16 +618,16 @@ render_dashboard() {
   codex_rss_mib=$(to_mib "$CODEX_RSS_KB")
   data_free_gib=$(awk -v blocks="$DATA_AVAILABLE_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
 
-  render_header_line
-  render_panel_line "TERMUX SYSTEM SNAPSHOT  $now"
-  render_header_line
+  render_title_separator_line
+  render_title_line "TERMUX SYSTEM SNAPSHOT  $now"
+  render_title_separator_line
   render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB [$(bar "$MEM_AVAILABLE_PERCENT" 12)]  SwapFree: $swap_free_mib MiB [$(bar "$SWAP_FREE_PERCENT" 12)]  /data: $DATA_USED_PERCENT% used"
   render_panel_lines_wrapped "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB    CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB    /data free: $data_free_gib GiB"
   render_panel_lines_wrapped "AgentsCPU: $AGENT_CPU_PERCENT [$(bar "$AGENT_CPU_PERCENT" "$CPU_BAR_WIDTH")]"
   render_panel_lines_wrapped "AgentsMem: $AGENT_MEM_PERCENT [$(bar "$AGENT_MEM_PERCENT" "$MEM_BAR_WIDTH")]"
-  render_header_line
+  render_plain_header_line
   render_process_tree
-  render_header_line
+  render_plain_header_line
 }
 
 enter_live_screen() {

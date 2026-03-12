@@ -10,6 +10,8 @@ if [ ! -x "$SCRIPT" ]; then
 fi
 
 output=$("$SCRIPT" --once)
+styled_output=$(CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once)
+reverse_ansi=$(printf '\033[7m')
 
 for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
   if ! printf '%s\n' "$output" | grep -F "$pattern" >/dev/null 2>&1; then
@@ -17,6 +19,29 @@ for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%ME
     exit 1
   fi
 done
+
+title_line=$(printf '%s\n' "$styled_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
+if ! printf '%s' "$title_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render the title line in reverse video" >&2
+  exit 1
+fi
+
+table_header_line=$(printf '%s\n' "$styled_output" | grep -F "PID" | head -n 1)
+if ! printf '%s' "$table_header_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render the process table header in reverse video" >&2
+  exit 1
+fi
+
+summary_line=$(printf '%s\n' "$styled_output" | grep -F "RISK:" | head -n 1)
+if printf '%s' "$summary_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
+  echo "FAIL: summary lines should remain plain text in forced-style output" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$styled_output" | grep -F "------ ------ -------" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should remove the dashed separator below the table header" >&2
+  exit 1
+fi
 
 reported_agents_mem=$(
   printf '%s\n' "$output" | sed -n 's/.*AgentsMem: \([0-9.][0-9.]*\) .*/\1/p' | head -n 1
