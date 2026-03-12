@@ -14,6 +14,8 @@ styled_output=$(CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once)
 styled_diff_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
 reverse_ansi=$(printf '\033[7m')
 green_ansi=$(printf '\033[92m')
+orange_ansi=$(printf '\033[38;2;255;170;0m')
+cyan_ansi=$(printf '\033[38;2;110;235;255m')
 reset_ansi=$(printf '\033[0m')
 
 for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
@@ -30,6 +32,36 @@ fi
 
 if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}██████████░░░░░░░░░░${reset_ansi}" >/dev/null 2>&1; then
   echo "FAIL: forced diff output should color the full 20-slot summary bar with one ANSI color" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}55.0%${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color summary percentages with the same color as their bars" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}12.5" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color process utilization numbers with the same color as their bars" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${orange_ansi}CLAUDE" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color CLAUDE roles bright orange" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}CODEX" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color CODEX roles bright cyan" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${orange_ansi}child" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color Claude child roles bright orange" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}child" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color Codex child roles bright cyan" >&2
   exit 1
 fi
 

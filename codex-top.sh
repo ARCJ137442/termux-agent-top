@@ -24,6 +24,8 @@ PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
 STYLE_ENABLED=0
 ANSI_REVERSE="$(printf '\033[7m')"
 ANSI_RESET="$(printf '\033[0m')"
+ANSI_BRIGHT_CLAUDE="$(printf '\033[38;2;255;170;0m')"
+ANSI_BRIGHT_CODEX="$(printf '\033[38;2;110;235;255m')"
 ANSI_BRIGHT_RED="$(printf '\033[91m')"
 ANSI_BRIGHT_GREEN="$(printf '\033[92m')"
 ANSI_BRIGHT_YELLOW="$(printf '\033[93m')"
@@ -179,6 +181,65 @@ render_bar() {
   fi
 
   printf '%s' "$bar_text"
+}
+
+role_color_code() {
+  role_kind="$1"
+
+  if [ "$STYLE_ENABLED" -eq 0 ]; then
+    printf '%s' ""
+    return
+  fi
+
+  case "$role_kind" in
+    claude)
+      printf '%s' "$ANSI_BRIGHT_CLAUDE"
+      ;;
+    codex)
+      printf '%s' "$ANSI_BRIGHT_CODEX"
+      ;;
+    *)
+      printf '%s' ""
+      ;;
+  esac
+}
+
+render_colored_text() {
+  text="$1"
+  color="$2"
+
+  if [ "$STYLE_ENABLED" -eq 1 ] && [ -n "$color" ]; then
+    printf '%s%s%s' "$color" "$text" "$ANSI_RESET"
+    return
+  fi
+
+  printf '%s' "$text"
+}
+
+render_metric_text() {
+  percent="$1"
+  kind="$2"
+  suffix="${3:-}"
+  color=$(bar_color_code "$percent" "$kind")
+  render_colored_text "${percent}${suffix}" "$color"
+}
+
+render_metric_field() {
+  value="$1"
+  kind="$2"
+  width="$3"
+  padded_text=$(awk -v value="$value" -v width="$width" 'BEGIN { printf "%-*s", width, value }')
+  color=$(bar_color_code "$value" "$kind")
+  render_colored_text "$padded_text" "$color"
+}
+
+render_role_field() {
+  role_kind="$1"
+  role_text="$2"
+  width="$3"
+  padded_text=$(awk -v value="$role_text" -v width="$width" 'BEGIN { printf "%-*s", width, value }')
+  color=$(role_color_code "$role_kind")
+  render_colored_text "$padded_text" "$color"
 }
 
 to_mib() {
@@ -509,12 +570,14 @@ render_process_tree() {
     sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
     sample_bar_low="$(render_bar 12.5 "$CPU_BAR_WIDTH" utilization)"
     sample_bar_mid="$(render_bar 55 "$CPU_BAR_WIDTH" utilization)"
-    printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' 1234 1 65536 1.6 "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" 12.5 "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" CLAUDE claude
-    printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' 2345 1 98304 2.3 "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" 55.0 "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" CODEX "node $sample_path"
+    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s\n' 1234 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 12.5 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" "$(render_role_field claude CLAUDE 9)" claude
+    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s\n' 1456 1234 4096 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 4.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 4.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude child 9)" "|- helper"
+    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s\n' 2345 1 98304 "$(render_metric_field 2.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" "$(render_metric_field 55.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" "$(render_role_field codex CODEX 9)" "node $sample_path"
+    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s\n' 2456 2345 5120 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 8.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 8.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field codex child 9)" "|- worker"
     return
   fi
 
-  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_reset="$ANSI_RESET" '
+  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
@@ -523,12 +586,12 @@ render_process_tree() {
     function is_agent_root(pid) {
       return comm[pid] == "claude" || comm[pid] == "codex";
     }
-    function role_label(pid, depth) {
+    function role_label(root_kind, depth) {
       if (depth == 0) {
-        if (comm[pid] == "claude") {
+        if (root_kind == "claude") {
           return "CLAUDE";
         }
-        if (comm[pid] == "codex") {
+        if (root_kind == "codex") {
           return "CODEX";
         }
       }
@@ -601,6 +664,24 @@ render_process_tree() {
       }
       return ansi_green;
     }
+    function role_color(root_kind) {
+      if (style_enabled != 1) {
+        return "";
+      }
+      if (root_kind == "claude") {
+        return ansi_claude;
+      }
+      if (root_kind == "codex") {
+        return ansi_codex;
+      }
+      return "";
+    }
+    function style_text(text, color_text) {
+      if (style_enabled == 1 && color_text != "") {
+        return color_text text ansi_reset;
+      }
+      return text;
+    }
     function render_bar(percent, width, kind, bar_text, color_text) {
       bar_text = cpu_bar(percent, width);
       color_text = bar_color(percent, kind);
@@ -608,6 +689,14 @@ render_process_tree() {
         return color_text bar_text ansi_reset;
       }
       return bar_text;
+    }
+    function render_metric_text(percent, kind, width, plain_text) {
+      plain_text = sprintf("%-*s", width, sprintf("%.1f", percent));
+      return style_text(plain_text, bar_color(percent, kind));
+    }
+    function render_role_text(root_kind, depth, width, plain_text) {
+      plain_text = sprintf("%-*s", width, role_label(root_kind, depth));
+      return style_text(plain_text, role_color(root_kind));
     }
     function compact_home_path(text,    pos, result) {
       result = "";
@@ -634,7 +723,7 @@ render_process_tree() {
         }
       }
     }
-    function print_node(pid, depth, prefix, child_ids, n, i, child_pid, summary) {
+    function print_node(pid, depth, root_kind, prefix, child_ids, n, i, child_pid, summary) {
       prefix = "";
       for (i = 0; i < depth; i++) {
         prefix = prefix "  ";
@@ -644,17 +733,20 @@ render_process_tree() {
       }
       summary = short_args(compact_home_path(args[pid]), command_width - length(prefix));
       mem_percent = safe_percent(rss[pid], mem_total_kb);
-      printf "%-6s %-6s %-7s %-6.1f %-*s %-6s %-*s %-9s %s%s\n",
+      if (depth == 0) {
+        root_kind = comm[pid];
+      }
+      printf "%-6s %-6s %-7s %s %-*s %s %-*s %s %s%s\n",
         pid,
         ppid[pid],
         rss[pid],
-        mem_percent,
+        render_metric_text(mem_percent, "utilization", 6),
         mem_bar_field_width,
         render_bar(mem_percent, mem_bar_width, "utilization"),
-        cpu[pid],
+        render_metric_text(cpu[pid], "utilization", 6),
         cpu_bar_field_width,
         render_bar(cpu[pid], cpu_bar_width, "utilization"),
-        role_label(pid, depth),
+        render_role_text(root_kind, depth, 9),
         prefix,
         summary;
 
@@ -663,7 +755,7 @@ render_process_tree() {
         child_pid = child_ids[i];
         if (child_pid != "" && !hidden[child_pid] && !printed[child_pid]) {
           printed[child_pid] = 1;
-          print_node(child_pid, depth + 1);
+          print_node(child_pid, depth + 1, root_kind);
         }
       }
     }
@@ -698,7 +790,7 @@ render_process_tree() {
         pid_val = root_order[i];
         if (!hidden[pid_val] && !printed[pid_val]) {
           printed[pid_val] = 1;
-          print_node(pid_val, 0);
+          print_node(pid_val, 0, comm[pid_val]);
         }
       }
     }
@@ -726,10 +818,10 @@ render_dashboard() {
     render_title_line "TERMUX SYSTEM SNAPSHOT  $now"
     render_plain_header_line
   fi
-  render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) ${MEM_AVAILABLE_PERCENT}%  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) ${SWAP_FREE_PERCENT}%  /data: $DATA_USED_PERCENT% used"
+  render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$MEM_AVAILABLE_PERCENT" availability "%")  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$SWAP_FREE_PERCENT" availability "%")  /data: $DATA_USED_PERCENT% used"
   render_panel_lines_wrapped "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB    CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB    /data free: $data_free_gib GiB"
-  render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) ${AGENT_CPU_PERCENT}%"
-  render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) ${AGENT_MEM_PERCENT}%"
+  render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%")"
+  render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_MEM_PERCENT" utilization "%")"
   if [ "$STYLE_ENABLED" -eq 0 ]; then
     render_plain_header_line
   fi
