@@ -12,6 +12,9 @@ fi
 output=$("$SCRIPT" --once)
 styled_output=$(CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once)
 styled_diff_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
+styled_risk_warn_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_warn "$SCRIPT" --once)
+styled_risk_hot_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_hot "$SCRIPT" --once)
+styled_risk_crit_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_crit "$SCRIPT" --once)
 styled_disk_warn_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=disk_warn "$SCRIPT" --once)
 styled_disk_hot_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=disk_hot "$SCRIPT" --once)
 styled_fps_integer_output=$(COLUMNS=80 CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once --interval 0.25)
@@ -177,8 +180,8 @@ fi
 reverse_line_count=$(
   printf '%s\n' "$styled_output" | awk -v reverse="$reverse_ansi" 'index($0, reverse) > 0 { count++ } END { print count + 0 }'
 )
-if [ "$reverse_line_count" -ne 2 ]; then
-  echo "FAIL: forced-style output should keep reverse video only on the title line and table header" >&2
+if [ "$reverse_line_count" -ne 3 ]; then
+  echo "FAIL: forced-style output should keep reverse video only on the title line, risk badge, and table header" >&2
   exit 1
 fi
 
@@ -188,14 +191,32 @@ if ! printf '%s' "$table_header_line" | grep -F "$reverse_ansi" >/dev/null 2>&1;
   exit 1
 fi
 
-summary_line=$(printf '%s\n' "$styled_output" | grep -F "RISK:" | head -n 1)
-if printf '%s' "$summary_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
-  echo "FAIL: summary lines should remain plain text in forced-style output" >&2
+summary_line=$(printf '%s\n' "$styled_diff_output" | grep -F "RISK:" | head -n 1)
+if ! printf '%s' "$summary_line" | grep -F "${green_ansi}${reverse_ansi} RISK: OK ${reset_ansi}  MemAvailable:" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render an isolated green reverse-video RISK badge for OK state" >&2
   exit 1
 fi
 
 if printf '%s' "$summary_line" | grep -F "|" >/dev/null 2>&1; then
   echo "FAIL: summary lines should not include panel-side bars in forced-style output" >&2
+  exit 1
+fi
+
+warn_summary_line=$(printf '%s\n' "$styled_risk_warn_output" | grep -F "RISK:" | head -n 1)
+if ! printf '%s' "$warn_summary_line" | grep -F "${yellow_ansi}${reverse_ansi} RISK: WARN ${reset_ansi}  MemAvailable:" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render an isolated yellow reverse-video RISK badge for WARN state" >&2
+  exit 1
+fi
+
+hot_summary_line=$(printf '%s\n' "$styled_risk_hot_output" | grep -F "RISK:" | head -n 1)
+if ! printf '%s' "$hot_summary_line" | grep -F "${orange_ansi}${reverse_ansi} RISK: HOT ${reset_ansi}  MemAvailable:" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render an isolated orange reverse-video RISK badge for HOT state" >&2
+  exit 1
+fi
+
+crit_summary_line=$(printf '%s\n' "$styled_risk_crit_output" | grep -F "RISK:" | head -n 1)
+if ! printf '%s' "$crit_summary_line" | grep -F "${red_ansi}${reverse_ansi} RISK: CRIT ${reset_ansi}  MemAvailable:" >/dev/null 2>&1; then
+  echo "FAIL: forced-style output should render an isolated red reverse-video RISK badge for CRIT state" >&2
   exit 1
 fi
 

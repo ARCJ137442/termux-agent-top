@@ -25,7 +25,8 @@ PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
 STYLE_ENABLED=0
 ANSI_REVERSE="$(printf '\033[7m')"
 ANSI_RESET="$(printf '\033[0m')"
-ANSI_BRIGHT_CLAUDE="$(printf '\033[38;2;255;170;0m')"
+ANSI_BRIGHT_ORANGE="$(printf '\033[38;2;255;170;0m')"
+ANSI_BRIGHT_CLAUDE="$ANSI_BRIGHT_ORANGE"
 ANSI_BRIGHT_CODEX="$(printf '\033[38;2;110;235;255m')"
 ANSI_BRIGHT_RED="$(printf '\033[91m')"
 ANSI_BRIGHT_GREEN="$(printf '\033[92m')"
@@ -253,6 +254,45 @@ render_colored_text() {
   printf '%s' "$text"
 }
 
+risk_color_code() {
+  risk_level="$1"
+
+  if [ "$STYLE_ENABLED" -eq 0 ]; then
+    printf '%s' ""
+    return
+  fi
+
+  case "$risk_level" in
+    OK)
+      printf '%s' "$ANSI_BRIGHT_GREEN"
+      ;;
+    WARN)
+      printf '%s' "$ANSI_BRIGHT_YELLOW"
+      ;;
+    HOT)
+      printf '%s' "$ANSI_BRIGHT_ORANGE"
+      ;;
+    CRIT)
+      printf '%s' "$ANSI_BRIGHT_RED"
+      ;;
+    *)
+      printf '%s' ""
+      ;;
+  esac
+}
+
+render_risk_badge() {
+  risk_level="$1"
+
+  if [ "$STYLE_ENABLED" -eq 1 ]; then
+    risk_color=$(risk_color_code "$risk_level")
+    printf '%s%s RISK: %s %s' "$risk_color" "$ANSI_REVERSE" "$risk_level" "$ANSI_RESET"
+    return
+  fi
+
+  printf 'RISK: %s' "$risk_level"
+}
+
 render_metric_text() {
   percent="$1"
   kind="$2"
@@ -296,6 +336,24 @@ safe_percent() {
   }'
 }
 
+determine_risk_level() {
+  awk -v mem_available_kb="$MEM_AVAILABLE_KB" -v data_free_percent="$DATA_FREE_PERCENT" 'BEGIN {
+    if (mem_available_kb < 512000 || data_free_percent < 5) {
+      print "CRIT";
+      exit;
+    }
+    if (mem_available_kb < 768000) {
+      print "HOT";
+      exit;
+    }
+    if (mem_available_kb < 1572864 || data_free_percent < 15) {
+      print "WARN";
+      exit;
+    }
+    print "OK";
+  }'
+}
+
 collect_system_metrics() {
   case "$TEST_MODE" in
     diff|diff_title)
@@ -312,7 +370,58 @@ collect_system_metrics() {
       MEM_AVAILABLE_PERCENT=50.0
       SWAP_USED_KB=1048576
       SWAP_FREE_PERCENT=50.0
-      RISK_LEVEL="OK"
+      RISK_LEVEL=$(determine_risk_level)
+      return
+      ;;
+    risk_warn)
+      MEM_TOTAL_KB=4194304
+      MEM_FREE_KB=1048576
+      MEM_AVAILABLE_KB=1310720
+      SWAP_TOTAL_KB=2097152
+      SWAP_FREE_KB=1048576
+      DATA_BLOCKS=4194304
+      DATA_USED_BLOCKS=1048576
+      DATA_AVAILABLE_BLOCKS=3145728
+      DATA_USED_PERCENT=25
+      DATA_FREE_PERCENT=75.0
+      MEM_AVAILABLE_PERCENT=31.2
+      SWAP_USED_KB=1048576
+      SWAP_FREE_PERCENT=50.0
+      RISK_LEVEL=$(determine_risk_level)
+      return
+      ;;
+    risk_hot)
+      MEM_TOTAL_KB=4194304
+      MEM_FREE_KB=1048576
+      MEM_AVAILABLE_KB=716800
+      SWAP_TOTAL_KB=2097152
+      SWAP_FREE_KB=1048576
+      DATA_BLOCKS=4194304
+      DATA_USED_BLOCKS=1048576
+      DATA_AVAILABLE_BLOCKS=3145728
+      DATA_USED_PERCENT=25
+      DATA_FREE_PERCENT=75.0
+      MEM_AVAILABLE_PERCENT=17.1
+      SWAP_USED_KB=1048576
+      SWAP_FREE_PERCENT=50.0
+      RISK_LEVEL=$(determine_risk_level)
+      return
+      ;;
+    risk_crit)
+      MEM_TOTAL_KB=4194304
+      MEM_FREE_KB=1048576
+      MEM_AVAILABLE_KB=409600
+      SWAP_TOTAL_KB=2097152
+      SWAP_FREE_KB=1048576
+      DATA_BLOCKS=4194304
+      DATA_USED_BLOCKS=1048576
+      DATA_AVAILABLE_BLOCKS=3145728
+      DATA_USED_PERCENT=25
+      DATA_FREE_PERCENT=75.0
+      MEM_AVAILABLE_PERCENT=9.8
+      SWAP_USED_KB=1048576
+      SWAP_FREE_PERCENT=50.0
+      RISK_LEVEL=$(determine_risk_level)
       return
       ;;
     disk_warn)
@@ -329,7 +438,7 @@ collect_system_metrics() {
       MEM_AVAILABLE_PERCENT=50.0
       SWAP_USED_KB=1048576
       SWAP_FREE_PERCENT=50.0
-      RISK_LEVEL="OK"
+      RISK_LEVEL=$(determine_risk_level)
       return
       ;;
     disk_hot)
@@ -346,7 +455,7 @@ collect_system_metrics() {
       MEM_AVAILABLE_PERCENT=50.0
       SWAP_USED_KB=1048576
       SWAP_FREE_PERCENT=50.0
-      RISK_LEVEL="HOT"
+      RISK_LEVEL=$(determine_risk_level)
       return
       ;;
   esac
@@ -371,18 +480,11 @@ collect_system_metrics() {
   MEM_AVAILABLE_PERCENT=$(safe_percent "$MEM_AVAILABLE_KB" "$MEM_TOTAL_KB")
   SWAP_USED_KB=$((SWAP_TOTAL_KB - SWAP_FREE_KB))
   SWAP_FREE_PERCENT=$(safe_percent "$SWAP_FREE_KB" "$SWAP_TOTAL_KB")
-
-  if [ "$MEM_AVAILABLE_KB" -lt 1048576 ] || [ "$DATA_USED_PERCENT" -ge 90 ]; then
-    RISK_LEVEL="HOT"
-  elif [ "$MEM_AVAILABLE_KB" -lt 1572864 ] || [ "$DATA_USED_PERCENT" -ge 88 ]; then
-    RISK_LEVEL="WARN"
-  else
-    RISK_LEVEL="OK"
-  fi
+  RISK_LEVEL=$(determine_risk_level)
 }
 
 collect_agent_rollup() {
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
     if [ "$LOOP_ITERATION" -le 1 ]; then
       CLAUDE_COUNT=1
       CLAUDE_RSS_KB=131072
@@ -693,7 +795,7 @@ render_process_header() {
 render_process_tree() {
   render_process_header
 
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
     sample_mem_bar_low="$(render_bar 1.6 "$MEM_BAR_WIDTH" utilization)"
     sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
@@ -949,6 +1051,7 @@ render_dashboard() {
   data_used_gib=$(awk -v blocks="$DATA_USED_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
   claude_summary=$(render_colored_text "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB" "$(role_color_code claude)")
   codex_summary=$(render_colored_text "CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB" "$(role_color_code codex)")
+  risk_badge=$(render_risk_badge "$RISK_LEVEL")
   title_right_text="FPS: $FPS_LABEL"
 
   if [ "$STYLE_ENABLED" -eq 1 ]; then
@@ -958,7 +1061,7 @@ render_dashboard() {
     render_title_line "TERMUX SYSTEM SNAPSHOT  $now" "$title_right_text"
     render_plain_header_line
   fi
-  render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$MEM_AVAILABLE_PERCENT" availability "%")  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$SWAP_FREE_PERCENT" availability "%")"
+  render_panel_lines_wrapped "$risk_badge  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$MEM_AVAILABLE_PERCENT" availability "%")  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$SWAP_FREE_PERCENT" availability "%")"
   render_panel_lines_wrapped "/data: $(render_bar "$DATA_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" disk_availability) $data_used_gib GiB used $(render_metric_text "$DATA_FREE_PERCENT" disk_availability "%") free"
   render_panel_lines_wrapped "$claude_summary    $codex_summary"
   render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%")"
