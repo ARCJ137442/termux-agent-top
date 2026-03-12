@@ -16,6 +16,8 @@ styled_diff_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=diff "$SCRIPT" 
 styled_risk_warn_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_warn "$SCRIPT" --once)
 styled_risk_hot_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_hot "$SCRIPT" --once)
 styled_risk_crit_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_crit "$SCRIPT" --once)
+styled_risk_cpu_hot_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_cpu_hot "$SCRIPT" --once)
+styled_risk_cpu_crit_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_cpu_crit "$SCRIPT" --once)
 styled_disk_warn_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=disk_warn "$SCRIPT" --once)
 styled_disk_hot_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=disk_hot "$SCRIPT" --once)
 styled_fps_integer_output=$(COLUMNS=80 CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once --interval 0.25)
@@ -368,6 +370,28 @@ fi
 crit_title_line=$(printf '%s\n' "$styled_risk_crit_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
 if ! printf '%s' "$crit_title_line" | grep -F "${red_ansi}${bold_ansi}RISK: CRIT" >/dev/null 2>&1; then
   echo "FAIL: forced-style output should render a red bold RISK badge on the title bar for CRIT state" >&2
+  exit 1
+fi
+
+cpu_hot_title_line=$(printf '%s\n' "$styled_risk_cpu_hot_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
+if ! printf '%s' "$cpu_hot_title_line" | grep -F "${orange_ansi}${bold_ansi}RISK: HOT" >/dev/null 2>&1; then
+  echo "FAIL: AgentsCPU values above 100% should elevate RISK to HOT even when memory and disk are healthy" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$styled_risk_cpu_hot_output" | grep -F "AgentsCPU:" | grep -F "150.0%" >/dev/null 2>&1; then
+  echo "FAIL: CPU-driven HOT test mode should expose an AgentsCPU sample above 100%" >&2
+  exit 1
+fi
+
+cpu_crit_title_line=$(printf '%s\n' "$styled_risk_cpu_crit_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
+if ! printf '%s' "$cpu_crit_title_line" | grep -F "${red_ansi}${bold_ansi}RISK: CRIT" >/dev/null 2>&1; then
+  echo "FAIL: AgentsCPU values above 200% should elevate RISK to CRIT even when memory and disk are healthy" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$styled_risk_cpu_crit_output" | grep -F "AgentsCPU:" | grep -F "250.0%" >/dev/null 2>&1; then
+  echo "FAIL: CPU-driven CRIT test mode should expose an AgentsCPU sample above 200%" >&2
   exit 1
 fi
 

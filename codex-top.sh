@@ -577,16 +577,28 @@ safe_percent() {
 }
 
 determine_risk_level() {
-  awk -v mem_available_kb="$MEM_AVAILABLE_KB" -v data_free_percent="$DATA_FREE_PERCENT" 'BEGIN {
-    if (mem_available_kb < 512000 || data_free_percent < 5) {
+  awk -v mem_available_kb="$MEM_AVAILABLE_KB" -v data_free_percent="$DATA_FREE_PERCENT" -v agent_cpu_percent="${AGENT_CPU_PERCENT:-0}" 'BEGIN {
+    severity = 0;
+
+    if (mem_available_kb < 1572864 || data_free_percent < 15) {
+      severity = 1;
+    }
+    if (mem_available_kb < 768000 || agent_cpu_percent > 100) {
+      severity = 2;
+    }
+    if (mem_available_kb < 512000 || data_free_percent < 5 || agent_cpu_percent > 200) {
+      severity = 3;
+    }
+
+    if (severity == 3) {
       print "CRIT";
       exit;
     }
-    if (mem_available_kb < 768000) {
+    if (severity == 2) {
       print "HOT";
       exit;
     }
-    if (mem_available_kb < 1572864 || data_free_percent < 15) {
+    if (severity == 1) {
       print "WARN";
       exit;
     }
@@ -728,7 +740,7 @@ sleep_until_refresh() {
 
 collect_system_metrics() {
   case "$TEST_MODE" in
-    diff|diff_title|resize)
+    diff|diff_title|resize|risk_cpu_hot|risk_cpu_crit)
       MEM_TOTAL_KB=4194304
       MEM_FREE_KB=1048576
       MEM_AVAILABLE_KB=2097152
@@ -870,16 +882,36 @@ collect_system_metrics() {
 }
 
 collect_agent_rollup() {
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "resize" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "resize" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "risk_cpu_hot" ] || [ "$TEST_MODE" = "risk_cpu_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
     if [ "$LOOP_ITERATION" -le 1 ]; then
       CLAUDE_COUNT=1
       CLAUDE_RSS_KB=131072
-      AGENT_CPU_PERCENT=55.0
+      case "$TEST_MODE" in
+        risk_cpu_hot)
+          AGENT_CPU_PERCENT=150.0
+          ;;
+        risk_cpu_crit)
+          AGENT_CPU_PERCENT=250.0
+          ;;
+        *)
+          AGENT_CPU_PERCENT=55.0
+          ;;
+      esac
       AGENT_MEM_PERCENT=7.8
     else
       CLAUDE_COUNT=2
       CLAUDE_RSS_KB=262144
-      AGENT_CPU_PERCENT=65.0
+      case "$TEST_MODE" in
+        risk_cpu_hot)
+          AGENT_CPU_PERCENT=150.0
+          ;;
+        risk_cpu_crit)
+          AGENT_CPU_PERCENT=250.0
+          ;;
+        *)
+          AGENT_CPU_PERCENT=65.0
+          ;;
+      esac
       AGENT_MEM_PERCENT=10.9
     fi
     CODEX_COUNT=1
@@ -1003,7 +1035,7 @@ collect_agent_rollup() {
 
 collect_task_metrics() {
   case "$TEST_MODE" in
-    diff|diff_title|resize|risk_warn|risk_hot|risk_crit|disk_warn|disk_hot)
+    diff|diff_title|resize|risk_warn|risk_hot|risk_crit|risk_cpu_hot|risk_cpu_crit|disk_warn|disk_hot)
       TASK_RUNNING_COUNT=2
       TASK_SLEEPING_COUNT=34
       TASK_STOPPED_COUNT=1
@@ -1270,7 +1302,7 @@ render_process_header() {
 render_process_tree() {
   render_process_header
 
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "resize" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "resize" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "risk_cpu_hot" ] || [ "$TEST_MODE" = "risk_cpu_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
     sample_mem_bar_low="$(render_bar 1.6 "$MEM_BAR_WIDTH" utilization)"
     sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
@@ -1605,6 +1637,7 @@ run_once() {
   collect_system_metrics
   collect_agent_rollup
   collect_task_metrics
+  RISK_LEVEL=$(determine_risk_level)
   render_dashboard
 }
 
