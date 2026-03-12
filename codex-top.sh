@@ -286,7 +286,7 @@ safe_percent() {
 }
 
 collect_system_metrics() {
-  if [ "$TEST_MODE" = "diff" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ]; then
     MEM_TOTAL_KB=4194304
     MEM_FREE_KB=1048576
     MEM_AVAILABLE_KB=2097152
@@ -335,7 +335,7 @@ collect_system_metrics() {
 }
 
 collect_agent_rollup() {
-  if [ "$TEST_MODE" = "diff" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ]; then
     if [ "$LOOP_ITERATION" -le 1 ]; then
       CLAUDE_COUNT=1
       CLAUDE_RSS_KB=131072
@@ -646,7 +646,7 @@ render_process_header() {
 render_process_tree() {
   render_process_header
 
-  if [ "$TEST_MODE" = "diff" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ]; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
     sample_mem_bar_low="$(render_bar 1.6 "$MEM_BAR_WIDTH" utilization)"
     sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
@@ -882,6 +882,14 @@ render_process_tree() {
 render_dashboard() {
   if [ "$TEST_MODE" = "diff" ]; then
     now='2026-03-12 00:00:00 CST'
+  elif [ "$TEST_MODE" = "diff_title" ]; then
+    now=$(awk -v iteration="$LOOP_ITERATION" 'BEGIN {
+      second = iteration - 1;
+      if (second < 0) {
+        second = 0;
+      }
+      printf "2026-03-12 00:00:%02d CST", second;
+    }')
   else
     now=$(date '+%F %T %Z')
   fi
@@ -953,9 +961,9 @@ render_frame_diff() {
       if (previous_lines[i] != current_lines[i]) {
         printf "\033[%d;1H", i;
         if (i <= current_count) {
-          printf "%s\033[K", current_lines[i];
+          printf "\033[2K%s", current_lines[i];
         } else {
-          printf "\033[K";
+          printf "\033[2K";
         }
       }
     }

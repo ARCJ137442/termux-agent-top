@@ -288,6 +288,13 @@ diff_output=$(
   sh "$SCRIPT" --interval 1
 )
 
+title_refresh_output=$(
+  CODEX_TOP_FORCE_STYLE=1 \
+  CODEX_TOP_TEST_MODE=diff_title \
+  CODEX_TOP_TEST_CYCLES=2 \
+  sh "$SCRIPT" --interval 0.25
+)
+
 title_count=$(printf '%s' "$diff_output" | awk '
   BEGIN { count = 0 }
   {
@@ -323,6 +330,16 @@ fi
 
 if ! printf '%s' "$diff_output" | grep -F "$(printf '\033[5;1H')" >/dev/null 2>&1; then
   echo "FAIL: diff mode should reposition cursor to the changed row" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$title_refresh_output" | grep -F "$(printf '\033[1;1H\033[2K')" >/dev/null 2>&1; then
+  echo "FAIL: title refresh should clear row 1 before repainting the styled title" >&2
+  exit 1
+fi
+
+if printf '%s' "$title_refresh_output" | grep -F "FPS: 4 ${reset_ansi}$(printf '\033[K')" >/dev/null 2>&1; then
+  echo "FAIL: title refresh should not clear the line after repainting the FPS edge" >&2
   exit 1
 fi
 
