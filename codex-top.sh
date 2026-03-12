@@ -173,6 +173,17 @@ bar_color_code() {
   fi
 
   awk -v percent="$percent" -v kind="$kind" -v green="$ANSI_BRIGHT_GREEN" -v yellow="$ANSI_BRIGHT_YELLOW" -v red="$ANSI_BRIGHT_RED" 'BEGIN {
+    if (kind == "disk_availability") {
+      if (percent < 5) {
+        printf "%s", red;
+      } else if (percent < 15) {
+        printf "%s", yellow;
+      } else {
+        printf "%s", green;
+      }
+      exit;
+    }
+
     if (kind == "availability") {
       if (percent < 20) {
         printf "%s", red;
@@ -286,23 +297,59 @@ safe_percent() {
 }
 
 collect_system_metrics() {
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ]; then
-    MEM_TOTAL_KB=4194304
-    MEM_FREE_KB=1048576
-    MEM_AVAILABLE_KB=2097152
-    SWAP_TOTAL_KB=2097152
-    SWAP_FREE_KB=1048576
-    DATA_BLOCKS=4194304
-    DATA_USED_BLOCKS=1048576
-    DATA_AVAILABLE_BLOCKS=3145728
-    DATA_USED_PERCENT=25
-    DATA_FREE_PERCENT=75.0
-    MEM_AVAILABLE_PERCENT=50.0
-    SWAP_USED_KB=1048576
-    SWAP_FREE_PERCENT=50.0
-    RISK_LEVEL="OK"
-    return
-  fi
+  case "$TEST_MODE" in
+    diff|diff_title)
+      MEM_TOTAL_KB=4194304
+      MEM_FREE_KB=1048576
+      MEM_AVAILABLE_KB=2097152
+      SWAP_TOTAL_KB=2097152
+      SWAP_FREE_KB=1048576
+      DATA_BLOCKS=4194304
+      DATA_USED_BLOCKS=1048576
+      DATA_AVAILABLE_BLOCKS=3145728
+      DATA_USED_PERCENT=25
+      DATA_FREE_PERCENT=75.0
+      MEM_AVAILABLE_PERCENT=50.0
+      SWAP_USED_KB=1048576
+      SWAP_FREE_PERCENT=50.0
+      RISK_LEVEL="OK"
+      return
+      ;;
+    disk_warn)
+      MEM_TOTAL_KB=4194304
+      MEM_FREE_KB=1048576
+      MEM_AVAILABLE_KB=2097152
+      SWAP_TOTAL_KB=2097152
+      SWAP_FREE_KB=1048576
+      DATA_BLOCKS=4194304
+      DATA_USED_BLOCKS=3607102
+      DATA_AVAILABLE_BLOCKS=587202
+      DATA_USED_PERCENT=86
+      DATA_FREE_PERCENT=14.0
+      MEM_AVAILABLE_PERCENT=50.0
+      SWAP_USED_KB=1048576
+      SWAP_FREE_PERCENT=50.0
+      RISK_LEVEL="OK"
+      return
+      ;;
+    disk_hot)
+      MEM_TOTAL_KB=4194304
+      MEM_FREE_KB=1048576
+      MEM_AVAILABLE_KB=2097152
+      SWAP_TOTAL_KB=2097152
+      SWAP_FREE_KB=1048576
+      DATA_BLOCKS=4194304
+      DATA_USED_BLOCKS=4026532
+      DATA_AVAILABLE_BLOCKS=167772
+      DATA_USED_PERCENT=96
+      DATA_FREE_PERCENT=4.0
+      MEM_AVAILABLE_PERCENT=50.0
+      SWAP_USED_KB=1048576
+      SWAP_FREE_PERCENT=50.0
+      RISK_LEVEL="HOT"
+      return
+      ;;
+  esac
 
   eval "$(
     awk '
@@ -335,7 +382,7 @@ collect_system_metrics() {
 }
 
 collect_agent_rollup() {
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
     if [ "$LOOP_ITERATION" -le 1 ]; then
       CLAUDE_COUNT=1
       CLAUDE_RSS_KB=131072
@@ -646,7 +693,7 @@ render_process_header() {
 render_process_tree() {
   render_process_header
 
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ]; then
+  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
     sample_mem_bar_low="$(render_bar 1.6 "$MEM_BAR_WIDTH" utilization)"
     sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
@@ -899,7 +946,7 @@ render_dashboard() {
   swap_total_mib=$(to_mib "$SWAP_TOTAL_KB")
   claude_rss_mib=$(to_mib "$CLAUDE_RSS_KB")
   codex_rss_mib=$(to_mib "$CODEX_RSS_KB")
-  data_free_gib=$(awk -v blocks="$DATA_AVAILABLE_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
+  data_used_gib=$(awk -v blocks="$DATA_USED_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
   claude_summary=$(render_colored_text "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB" "$(role_color_code claude)")
   codex_summary=$(render_colored_text "CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB" "$(role_color_code codex)")
   title_right_text="FPS: $FPS_LABEL"
@@ -911,7 +958,8 @@ render_dashboard() {
     render_title_line "TERMUX SYSTEM SNAPSHOT  $now" "$title_right_text"
     render_plain_header_line
   fi
-  render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$MEM_AVAILABLE_PERCENT" availability "%")  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$SWAP_FREE_PERCENT" availability "%")  /data free: $data_free_gib GiB $(render_bar "$DATA_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$DATA_FREE_PERCENT" availability "%")  /data: $DATA_USED_PERCENT% used"
+  render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$MEM_AVAILABLE_PERCENT" availability "%")  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$SWAP_FREE_PERCENT" availability "%")"
+  render_panel_lines_wrapped "/data: $(render_bar "$DATA_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" disk_availability) $data_used_gib GiB used $(render_metric_text "$DATA_FREE_PERCENT" disk_availability "%") free"
   render_panel_lines_wrapped "$claude_summary    $codex_summary"
   render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%")"
   render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_MEM_PERCENT" utilization "%")"

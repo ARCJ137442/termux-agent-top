@@ -12,12 +12,16 @@ fi
 output=$("$SCRIPT" --once)
 styled_output=$(CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once)
 styled_diff_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
+styled_disk_warn_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=disk_warn "$SCRIPT" --once)
+styled_disk_hot_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=disk_hot "$SCRIPT" --once)
 styled_fps_integer_output=$(COLUMNS=80 CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once --interval 0.25)
 styled_fps_fraction_output=$(COLUMNS=80 CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once --interval 8)
 fps_output=$(COLUMNS=90 "$SCRIPT" --once --interval 2)
 fps_zero_output=$("$SCRIPT" --once --interval 0)
 reverse_ansi=$(printf '\033[7m')
 green_ansi=$(printf '\033[92m')
+yellow_ansi=$(printf '\033[93m')
+red_ansi=$(printf '\033[91m')
 orange_ansi=$(printf '\033[38;2;255;170;0m')
 cyan_ansi=$(printf '\033[38;2;110;235;255m')
 reset_ansi=$(printf '\033[0m')
@@ -124,18 +128,43 @@ if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}CODEX: 1 proc  RSS
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "/data free: 1.5 GiB" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should show /data free next to the global /data usage section" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "/data:" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should render a dedicated /data summary line" >&2
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}75.0%${reset_ansi}" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should show a colored /data free percentage like the memory summaries" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "0.5 GiB used" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should show /data used GiB on the dedicated /data line" >&2
   exit 1
 fi
 
-if printf '%s' "$styled_diff_output" | grep -F "/data free: 1.5 GiB    ${orange_ansi}CLAUDE" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should not keep /data free on the agent summary line" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}75.0%${reset_ansi} free" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should show a colored /data free percentage on the dedicated /data line" >&2
+  exit 1
+fi
+
+if printf '%s' "$styled_diff_output" | grep -F "/data free:" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should not use the old '/data free:' label" >&2
+  exit 1
+fi
+
+if printf '%s' "$styled_diff_output" | grep -F "/data: 25% used" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should not repeat the old trailing '/data: XX% used' format" >&2
+  exit 1
+fi
+
+if printf '%s' "$styled_diff_output" | grep -F "/data:" | grep -F "${orange_ansi}CLAUDE" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should keep the dedicated /data line separate from the agent summary line" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_disk_warn_output" | grep -F "${yellow_ansi}14.0%${reset_ansi} free" >/dev/null 2>&1; then
+  echo "FAIL: /data free percentages below 15% should render yellow" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_disk_hot_output" | grep -F "${red_ansi}4.0%${reset_ansi} free" >/dev/null 2>&1; then
+  echo "FAIL: /data free percentages below 5% should render red" >&2
   exit 1
 fi
 
@@ -328,8 +357,8 @@ if ! printf '%s' "$diff_output" | grep -F "%MEM" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! printf '%s' "$diff_output" | grep -F "$(printf '\033[5;1H')" >/dev/null 2>&1; then
-  echo "FAIL: diff mode should reposition cursor to the changed row" >&2
+if ! printf '%s' "$diff_output" | grep -F "$(printf '\033[6;1H')" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should reposition cursor to the updated agent summary row" >&2
   exit 1
 fi
 
