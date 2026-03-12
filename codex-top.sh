@@ -270,6 +270,7 @@ collect_system_metrics() {
     DATA_USED_BLOCKS=1048576
     DATA_AVAILABLE_BLOCKS=3145728
     DATA_USED_PERCENT=25
+    DATA_FREE_PERCENT=75.0
     MEM_AVAILABLE_PERCENT=50.0
     SWAP_USED_KB=1048576
     SWAP_FREE_PERCENT=50.0
@@ -292,6 +293,7 @@ collect_system_metrics() {
   DATA_USED_BLOCKS=$(printf '%s\n' "$DATA_DF_LINE" | awk '{ print $2 }')
   DATA_AVAILABLE_BLOCKS=$(printf '%s\n' "$DATA_DF_LINE" | awk '{ print $3 }')
   DATA_USED_PERCENT=$(printf '%s\n' "$DATA_DF_LINE" | awk '{ gsub(/%/, "", $4); print $4 }')
+  DATA_FREE_PERCENT=$(safe_percent "$DATA_AVAILABLE_BLOCKS" "$DATA_BLOCKS")
 
   MEM_AVAILABLE_PERCENT=$(safe_percent "$MEM_AVAILABLE_KB" "$MEM_TOTAL_KB")
   SWAP_USED_KB=$((SWAP_TOTAL_KB - SWAP_FREE_KB))
@@ -810,6 +812,8 @@ render_dashboard() {
   claude_rss_mib=$(to_mib "$CLAUDE_RSS_KB")
   codex_rss_mib=$(to_mib "$CODEX_RSS_KB")
   data_free_gib=$(awk -v blocks="$DATA_AVAILABLE_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
+  claude_summary=$(render_colored_text "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB" "$(role_color_code claude)")
+  codex_summary=$(render_colored_text "CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB" "$(role_color_code codex)")
 
   if [ "$STYLE_ENABLED" -eq 1 ]; then
     render_title_line "TERMUX SYSTEM SNAPSHOT  $now"
@@ -818,8 +822,8 @@ render_dashboard() {
     render_title_line "TERMUX SYSTEM SNAPSHOT  $now"
     render_plain_header_line
   fi
-  render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$MEM_AVAILABLE_PERCENT" availability "%")  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$SWAP_FREE_PERCENT" availability "%")  /data: $DATA_USED_PERCENT% used"
-  render_panel_lines_wrapped "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB    CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB    /data free: $data_free_gib GiB"
+  render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB $(render_bar "$MEM_AVAILABLE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$MEM_AVAILABLE_PERCENT" availability "%")  SwapFree: $swap_free_mib MiB $(render_bar "$SWAP_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$SWAP_FREE_PERCENT" availability "%")  /data free: $data_free_gib GiB $(render_bar "$DATA_FREE_PERCENT" "$SUMMARY_BAR_WIDTH" availability) $(render_metric_text "$DATA_FREE_PERCENT" availability "%")  /data: $DATA_USED_PERCENT% used"
+  render_panel_lines_wrapped "$claude_summary    $codex_summary"
   render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%")"
   render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_MEM_PERCENT" utilization "%")"
   if [ "$STYLE_ENABLED" -eq 0 ]; then

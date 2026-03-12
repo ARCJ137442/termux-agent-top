@@ -65,6 +65,31 @@ if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}child" >/dev/null 
   exit 1
 fi
 
+if ! printf '%s' "$styled_diff_output" | grep -F "${orange_ansi}CLAUDE: 1 proc  RSS 128.0 MiB${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color the CLAUDE agent summary segment bright orange" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}CODEX: 1 proc  RSS 192.0 MiB${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color the CODEX agent summary segment bright cyan" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "/data free: 1.5 GiB" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should show /data free next to the global /data usage section" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}75.0%${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should show a colored /data free percentage like the memory summaries" >&2
+  exit 1
+fi
+
+if printf '%s' "$styled_diff_output" | grep -F "/data free: 1.5 GiB    ${orange_ansi}CLAUDE" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should not keep /data free on the agent summary line" >&2
+  exit 1
+fi
+
 title_line=$(printf '%s\n' "$styled_output" | grep -F "TERMUX SYSTEM SNAPSHOT" | head -n 1)
 if ! printf '%s' "$title_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
   echo "FAIL: forced-style output should render the title line in reverse video" >&2
