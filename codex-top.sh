@@ -12,8 +12,10 @@ TEST_CYCLES="${CODEX_TOP_TEST_CYCLES:-0}"
 DEFAULT_PANEL_WIDTH=300
 MIN_PANEL_WIDTH=72
 CPU_BAR_WIDTH=10
+MEM_BAR_WIDTH=10
+PROCESS_MEM_BAR_FIELD_WIDTH=$((MEM_BAR_WIDTH + 2))
 PROCESS_CPU_BAR_FIELD_WIDTH=$((CPU_BAR_WIDTH + 2))
-PROCESS_FIXED_WIDTH=$((6 + 1 + 6 + 1 + 7 + 1 + 6 + 1 + PROCESS_CPU_BAR_FIELD_WIDTH + 1 + 9 + 1))
+PROCESS_FIXED_WIDTH=$((6 + 1 + 6 + 1 + 7 + 1 + 6 + 1 + PROCESS_MEM_BAR_FIELD_WIDTH + 1 + 6 + 1 + PROCESS_CPU_BAR_FIELD_WIDTH + 1 + 9 + 1))
 PANEL_WIDTH=$DEFAULT_PANEL_WIDTH
 PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
 PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
@@ -64,6 +66,9 @@ configure_layout() {
 
   PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
   PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
+  if [ "$PROCESS_COMMAND_WIDTH" -lt 7 ]; then
+    PROCESS_COMMAND_WIDTH=7
+  fi
 }
 
 configure_layout
@@ -188,10 +193,12 @@ collect_agent_rollup() {
       CLAUDE_COUNT=1
       CLAUDE_RSS_KB=131072
       AGENT_CPU_PERCENT=55.0
+      AGENT_MEM_PERCENT=7.8
     else
       CLAUDE_COUNT=2
       CLAUDE_RSS_KB=262144
       AGENT_CPU_PERCENT=65.0
+      AGENT_MEM_PERCENT=10.9
     fi
     CODEX_COUNT=1
     CODEX_RSS_KB=196608
@@ -199,7 +206,7 @@ collect_agent_rollup() {
   fi
 
   eval "$(
-    ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= | awk -v monitor_pid="$MONITOR_PID" '
+    ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= | awk -v monitor_pid="$MONITOR_PID" -v mem_total_kb="$MEM_TOTAL_KB" '
       function trim(s) {
         sub(/^[[:space:]]+/, "", s);
         sub(/[[:space:]]+$/, "", s);
@@ -236,6 +243,21 @@ collect_agent_rollup() {
           child_pid = child_ids[i];
           if (child_pid != "") {
             total += sum_visible_cpu(child_pid);
+          }
+        }
+        return total;
+      }
+      function sum_visible_rss(pid, child_ids, n, i, child_pid, total) {
+        if (hidden[pid]) {
+          return 0;
+        }
+
+        total = rss[pid];
+        n = split(children[pid], child_ids, " ");
+        for (i = 1; i <= n; i++) {
+          child_pid = child_ids[i];
+          if (child_pid != "") {
+            total += sum_visible_rss(child_pid);
           }
         }
         return total;
@@ -278,6 +300,7 @@ collect_agent_rollup() {
               codex_rss += rss[pid_val];
             }
             agent_cpu += sum_visible_cpu(pid_val);
+            agent_rss += sum_visible_rss(pid_val);
           }
         }
 
@@ -286,6 +309,11 @@ collect_agent_rollup() {
         printf "CODEX_COUNT=%d\n", codex_count;
         printf "CODEX_RSS_KB=%d\n", codex_rss;
         printf "AGENT_CPU_PERCENT=%.1f\n", agent_cpu;
+        if (mem_total_kb > 0) {
+          printf "AGENT_MEM_PERCENT=%.1f\n", (agent_rss / mem_total_kb) * 100.0;
+        } else {
+          printf "AGENT_MEM_PERCENT=0.0\n";
+        }
       }
     '
   )"
@@ -350,16 +378,18 @@ render_panel_lines_wrapped() {
 render_process_tree() {
   if [ "$TEST_MODE" = "diff" ]; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
+    sample_mem_bar_low="[$(bar 1.6 "$MEM_BAR_WIDTH")]"
+    sample_mem_bar_mid="[$(bar 2.3 "$MEM_BAR_WIDTH")]"
     sample_bar_low="[$(bar 12.5 "$CPU_BAR_WIDTH")]"
     sample_bar_mid="[$(bar 55 "$CPU_BAR_WIDTH")]"
-    printf '%-6s %-6s %-7s %-6s %-*s %-9s %s\n' PID PPID RSS_KB %CPU "$PROCESS_CPU_BAR_FIELD_WIDTH" CPU ROLE COMMAND
-    printf '%-6s %-6s %-7s %-6s %-*s %-9s %s\n' ------ ------ ------- ------ "$PROCESS_CPU_BAR_FIELD_WIDTH" ------------ --------- --------------------------------------------------------
-    printf '%-6s %-6s %-7s %-6s %-*s %-9s %s\n' 1234 1 65536 12.5 "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" CLAUDE claude
-    printf '%-6s %-6s %-7s %-6s %-*s %-9s %s\n' 2345 1 98304 55.0 "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" CODEX "node $sample_path"
+    printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' PID PPID RSS_KB %MEM "$PROCESS_MEM_BAR_FIELD_WIDTH" MEM %CPU "$PROCESS_CPU_BAR_FIELD_WIDTH" CPU ROLE COMMAND
+    printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' ------ ------ ------- ------ "$PROCESS_MEM_BAR_FIELD_WIDTH" ------------ ------ "$PROCESS_CPU_BAR_FIELD_WIDTH" ------------ --------- --------------------------------------------------------
+    printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' 1234 1 65536 1.6 "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" 12.5 "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" CLAUDE claude
+    printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n' 2345 1 98304 2.3 "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" 55.0 "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" CODEX "node $sample_path"
     return
   fi
 
-  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" '
+  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
@@ -397,6 +427,12 @@ render_process_tree() {
         return substr(text, 1, max_len);
       }
       return substr(text, 1, max_len - 3) "...";
+    }
+    function safe_percent(numerator, denominator) {
+      if (denominator <= 0) {
+        return 0.0;
+      }
+      return (numerator / denominator) * 100.0;
     }
     function cpu_bar(percent, width, clamped, filled, i, bar_text) {
       clamped = percent + 0;
@@ -458,10 +494,14 @@ render_process_tree() {
         prefix = prefix "|- ";
       }
       summary = short_args(compact_home_path(args[pid]), command_width - length(prefix));
-      printf "%-6s %-6s %-7s %-6s %-*s %-9s %s%s\n",
+      mem_percent = safe_percent(rss[pid], mem_total_kb);
+      printf "%-6s %-6s %-7s %-6.1f %-*s %-6s %-*s %-9s %s%s\n",
         pid,
         ppid[pid],
         rss[pid],
+        mem_percent,
+        mem_bar_field_width,
+        cpu_bar(mem_percent, mem_bar_width),
         cpu[pid],
         cpu_bar_field_width,
         cpu_bar(cpu[pid], cpu_bar_width),
@@ -505,8 +545,8 @@ render_process_tree() {
       mark_hidden_chain(monitor_pid);
       mark_hidden_descendants(monitor_pid);
 
-      printf "%-6s %-6s %-7s %-6s %-*s %-9s %-*s\n", "PID", "PPID", "RSS_KB", "%CPU", cpu_bar_field_width, "CPU", "ROLE", command_width, "COMMAND";
-      printf "%-6s %-6s %-7s %-6s %-*s %-9s %s\n", "------", "------", "-------", "------", cpu_bar_field_width, repeat_str("-", cpu_bar_field_width), "---------", repeat_str("-", command_width);
+      printf "%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %-*s\n", "PID", "PPID", "RSS_KB", "%MEM", mem_bar_field_width, "MEM", "%CPU", cpu_bar_field_width, "CPU", "ROLE", command_width, "COMMAND";
+      printf "%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %s\n", "------", "------", "-------", "------", mem_bar_field_width, repeat_str("-", mem_bar_field_width), "------", cpu_bar_field_width, repeat_str("-", cpu_bar_field_width), "---------", repeat_str("-", command_width);
       for (i = 1; i <= root_count; i++) {
         pid_val = root_order[i];
         if (!hidden[pid_val] && !printed[pid_val]) {
@@ -538,6 +578,7 @@ render_dashboard() {
   render_panel_lines_wrapped "RISK: $RISK_LEVEL  MemAvailable: $mem_available_mib MiB [$(bar "$MEM_AVAILABLE_PERCENT" 12)]  SwapFree: $swap_free_mib MiB [$(bar "$SWAP_FREE_PERCENT" 12)]  /data: $DATA_USED_PERCENT% used"
   render_panel_lines_wrapped "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB    CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB    /data free: $data_free_gib GiB"
   render_panel_lines_wrapped "AgentsCPU: $AGENT_CPU_PERCENT [$(bar "$AGENT_CPU_PERCENT" "$CPU_BAR_WIDTH")]"
+  render_panel_lines_wrapped "AgentsMem: $AGENT_MEM_PERCENT [$(bar "$AGENT_MEM_PERCENT" "$MEM_BAR_WIDTH")]"
   render_header_line
   render_process_tree
   render_header_line

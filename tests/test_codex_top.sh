@@ -11,12 +11,32 @@ fi
 
 output=$("$SCRIPT" --once)
 
-for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "PID"; do
+for pattern in "TERMUX SYSTEM SNAPSHOT" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
   if ! printf '%s\n' "$output" | grep -F "$pattern" >/dev/null 2>&1; then
     echo "FAIL: missing pattern '$pattern'" >&2
     exit 1
   fi
 done
+
+reported_agents_mem=$(
+  printf '%s\n' "$output" | sed -n 's/.*AgentsMem: \([0-9.][0-9.]*\) .*/\1/p' | head -n 1
+)
+mem_total_kb=$(awk '/MemTotal:/ { print $2; exit }' /proc/meminfo)
+agent_root_rss_kb=$(ps -eo comm=,rss= | awk '$1 == "claude" || $1 == "codex" { rss += $2 } END { print rss + 0 }')
+minimum_agents_mem=$(
+  awk -v rss="$agent_root_rss_kb" -v total="$mem_total_kb" 'BEGIN {
+    if (total <= 0) {
+      printf "0.0";
+    } else {
+      printf "%.1f", (rss / total) * 100.0;
+    }
+  }'
+)
+
+if [ -n "$reported_agents_mem" ] && [ "$minimum_agents_mem" != "0.0" ] && [ "$reported_agents_mem" = "0.0" ]; then
+  echo "FAIL: AgentsMem should not be 0.0 when visible agent RSS already implies a non-zero percentage" >&2
+  exit 1
+fi
 
 if ! printf '%s\n' "$output" | awk 'length($0) > 300 { exit 1 }'; then
   echo "FAIL: one-shot output should fit within the 300-column panel width" >&2
@@ -124,8 +144,18 @@ if ! printf '%s' "$diff_output" | grep -F "AgentsCPU:" >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! printf '%s' "$diff_output" | grep -F "AgentsMem:" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should include an AgentsMem summary bar" >&2
+  exit 1
+fi
+
 if ! printf '%s' "$diff_output" | grep -F "[######----]" >/dev/null 2>&1; then
-  echo "FAIL: diff mode should render a 10-slot CPU utilization bar" >&2
+  echo "FAIL: diff mode should render a 10-slot utilization bar" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$diff_output" | grep -F "%MEM" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should include a %MEM process column" >&2
   exit 1
 fi
 
