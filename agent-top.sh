@@ -4,6 +4,7 @@ set -eu
 INTERVAL_SECONDS=2
 FPS_LABEL=""
 RUN_ONCE=0
+SUMMARY_ONLY=0
 MONITOR_PID=$$
 LIVE_SCREEN_ACTIVE=0
 LOOP_ITERATION=0
@@ -49,12 +50,15 @@ while [ "$#" -gt 0 ]; do
     --once)
       RUN_ONCE=1
       ;;
+    --summary-only)
+      SUMMARY_ONLY=1
+      ;;
     --interval)
       shift
       INTERVAL_SECONDS="${1:-2}"
       ;;
     *)
-      echo "usage: $0 [--once] [--interval seconds]" >&2
+      echo "usage: $0 [--once] [--summary-only] [--interval seconds]" >&2
       exit 1
       ;;
   esac
@@ -1848,6 +1852,12 @@ EOF
   render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%  ${agent_cpu_cores} cores")"
   render_panel_lines_wrapped "AgentsCPU(norm): $(render_bar "$AGENT_CPU_NORM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_NORM_PERCENT" utilization "%")"
   render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_MEM_PERCENT" utilization "%")"
+  if [ "$SUMMARY_ONLY" -eq 1 ]; then
+    if [ "$STYLE_ENABLED" -eq 0 ]; then
+      render_plain_header_line
+    fi
+    return
+  fi
   if [ "$STYLE_ENABLED" -eq 0 ]; then
     render_plain_header_line
   fi

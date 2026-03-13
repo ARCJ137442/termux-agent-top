@@ -10,7 +10,9 @@ if [ ! -x "$SCRIPT" ]; then
 fi
 
 output=$("$SCRIPT" --once)
+summary_only_output=$("$SCRIPT" --once --summary-only)
 styled_output=$(CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once)
+styled_summary_only_output=$(CODEX_TOP_FORCE_STYLE=1 "$SCRIPT" --once --summary-only)
 plain_diff_output=$(CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
 styled_diff_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
 styled_risk_warn_output=$(CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_MODE=risk_warn "$SCRIPT" --once)
@@ -98,6 +100,24 @@ fi
 for pattern in "TERMUX SYSTEM SNAPSHOT" "Tasks:" "Mem:" "Swap:" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM" "LOCATION"; do
   if ! printf '%s\n' "$output" | grep -F "$pattern" >/dev/null 2>&1; then
     echo "FAIL: missing pattern '$pattern'" >&2
+    exit 1
+  fi
+done
+
+for pattern in "Tasks:" "AgentsCPU" "AgentsMem"; do
+  if ! printf '%s\n' "$summary_only_output" | grep -F "$pattern" >/dev/null 2>&1; then
+    echo "FAIL: --summary-only should keep '$pattern' in the summary" >&2
+    exit 1
+  fi
+done
+
+for pattern in "PID" "COMMAND"; do
+  if printf '%s\n' "$summary_only_output" | grep -F "$pattern" >/dev/null 2>&1; then
+    echo "FAIL: --summary-only should omit the process table header" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$styled_summary_only_output" | grep -F "$pattern" >/dev/null 2>&1; then
+    echo "FAIL: styled --summary-only should omit the process table header" >&2
     exit 1
   fi
 done
