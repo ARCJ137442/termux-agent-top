@@ -21,7 +21,11 @@ CPU_BAR_WIDTH=10
 MEM_BAR_WIDTH=10
 PROCESS_MEM_BAR_FIELD_WIDTH=$MEM_BAR_WIDTH
 PROCESS_CPU_BAR_FIELD_WIDTH=$CPU_BAR_WIDTH
-PROCESS_FIXED_WIDTH=$((6 + 1 + 6 + 1 + 7 + 1 + 6 + 1 + PROCESS_MEM_BAR_FIELD_WIDTH + 1 + 6 + 1 + PROCESS_CPU_BAR_FIELD_WIDTH + 1 + 9 + 1))
+DEFAULT_PROCESS_LOCATION_WIDTH=20
+MIN_PROCESS_COMMAND_WIDTH=7
+PROCESS_BASE_FIXED_WIDTH=$((6 + 1 + 6 + 1 + 7 + 1 + 6 + 1 + PROCESS_MEM_BAR_FIELD_WIDTH + 1 + 6 + 1 + PROCESS_CPU_BAR_FIELD_WIDTH + 1 + 9 + 1))
+PROCESS_LOCATION_WIDTH=$DEFAULT_PROCESS_LOCATION_WIDTH
+PROCESS_FIXED_WIDTH=$((PROCESS_BASE_FIXED_WIDTH + PROCESS_LOCATION_WIDTH + 1))
 PANEL_WIDTH=$DEFAULT_PANEL_WIDTH
 PANEL_HEIGHT=0
 PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
@@ -151,9 +155,20 @@ configure_layout() {
   esac
 
   PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
+  PROCESS_LOCATION_WIDTH=$DEFAULT_PROCESS_LOCATION_WIDTH
+  PROCESS_FIXED_WIDTH=$((PROCESS_BASE_FIXED_WIDTH + PROCESS_LOCATION_WIDTH + 1))
   PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
-  if [ "$PROCESS_COMMAND_WIDTH" -lt 7 ]; then
-    PROCESS_COMMAND_WIDTH=7
+  if [ "$PROCESS_COMMAND_WIDTH" -lt "$MIN_PROCESS_COMMAND_WIDTH" ]; then
+    max_location_width=$((PANEL_WIDTH - PROCESS_BASE_FIXED_WIDTH - MIN_PROCESS_COMMAND_WIDTH - 1))
+    if [ "$max_location_width" -lt 0 ]; then
+      max_location_width=0
+    fi
+    PROCESS_LOCATION_WIDTH=$max_location_width
+    PROCESS_FIXED_WIDTH=$((PROCESS_BASE_FIXED_WIDTH + PROCESS_LOCATION_WIDTH + 1))
+    PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
+  fi
+  if [ "$PROCESS_COMMAND_WIDTH" -lt 1 ]; then
+    PROCESS_COMMAND_WIDTH=1
   fi
 }
 
@@ -1291,7 +1306,7 @@ render_panel_lines_wrapped() {
 }
 
 render_process_header() {
-  header_line=$(printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %-*s' "PID" "PPID" "RSS_KB" "%MEM" "$PROCESS_MEM_BAR_FIELD_WIDTH" "MEM" "%CPU" "$PROCESS_CPU_BAR_FIELD_WIDTH" "CPU" "ROLE" "$PROCESS_COMMAND_WIDTH" "COMMAND")
+  header_line=$(printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %-*s %-*s' "PID" "PPID" "RSS_KB" "%MEM" "$PROCESS_MEM_BAR_FIELD_WIDTH" "MEM" "%CPU" "$PROCESS_CPU_BAR_FIELD_WIDTH" "CPU" "ROLE" "$PROCESS_LOCATION_WIDTH" "LOCATION" "$PROCESS_COMMAND_WIDTH" "COMMAND")
   if [ "$STYLE_ENABLED" -eq 1 ]; then
     render_reverse_text_line "$header_line"
   else
@@ -1304,18 +1319,23 @@ render_process_tree() {
 
   if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "resize" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "risk_cpu_hot" ] || [ "$TEST_MODE" = "risk_cpu_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
+    sample_location_claude="main@termux-tools"
+    sample_location_codex="scratch"
+    sample_location_field_claude=$(render_text_field "$sample_location_claude" "$PROCESS_LOCATION_WIDTH")
+    sample_location_field_codex=$(render_text_field "$sample_location_codex" "$PROCESS_LOCATION_WIDTH")
+    sample_location_field_empty=$(render_text_field "" "$PROCESS_LOCATION_WIDTH")
     sample_mem_bar_low="$(render_bar 1.6 "$MEM_BAR_WIDTH" utilization)"
     sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
     sample_bar_low="$(render_bar 12.5 "$CPU_BAR_WIDTH" utilization)"
     sample_bar_mid="$(render_bar 55 "$CPU_BAR_WIDTH" utilization)"
-    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s\n' 1234 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 12.5 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" "$(render_role_field claude CLAUDE 9)" claude
-    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s\n' 1456 1234 4096 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 4.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 4.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude child 9)" "|- helper"
-    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s\n' 2345 1 98304 "$(render_metric_field 2.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" "$(render_metric_field 55.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" "$(render_role_field codex CODEX 9)" "node $sample_path"
-    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s\n' 2456 2345 5120 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 8.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 8.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field codex child 9)" "|- worker"
+    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1234 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 12.5 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" "$(render_role_field claude CLAUDE 9)" "$sample_location_field_claude" claude
+    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1456 1234 4096 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 4.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 4.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude child 9)" "$sample_location_field_empty" "|- helper"
+    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 2345 1 98304 "$(render_metric_field 2.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" "$(render_metric_field 55.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" "$(render_role_field codex CODEX 9)" "$sample_location_field_codex" "node $sample_path"
+    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 2456 2345 5120 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 8.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 8.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field codex child 9)" "$sample_location_field_empty" "|- worker"
     return
   fi
 
-  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" '
+  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
@@ -1444,6 +1464,59 @@ render_process_tree() {
       }
       return result text;
     }
+    function dq_quote(text,    result, i, ch) {
+      result = "\"";
+      for (i = 1; i <= length(text); i++) {
+        ch = substr(text, i, 1);
+        if (ch == "\\" || ch == "\"" || ch == "$" || ch == "`") {
+          result = result "\\" ch;
+        } else {
+          result = result ch;
+        }
+      }
+      result = result "\"";
+      return result;
+    }
+    function basename_path(path,    pos) {
+      sub(/\/$/, "", path);
+      pos = match(path, /[^\/]+$/);
+      if (pos == 0) {
+        return "";
+      }
+      return substr(path, RSTART, RLENGTH);
+    }
+    function get_location(pid,    cmd, cwd, folder, branch) {
+      if (pid in location_cache) {
+        return location_cache[pid];
+      }
+      cmd = "readlink /proc/" pid "/cwd 2>/dev/null";
+      cwd = "";
+      if ((cmd | getline cwd) <= 0) {
+        close(cmd);
+        location_cache[pid] = "";
+        return "";
+      }
+      close(cmd);
+      if (cwd == "") {
+        location_cache[pid] = "";
+        return "";
+      }
+      folder = basename_path(cwd);
+      branch = "";
+      cmd = "git -C " dq_quote(cwd) " symbolic-ref --short HEAD 2>/dev/null";
+      if ((cmd | getline branch) > 0) {
+        close(cmd);
+        branch = trim(branch);
+      } else {
+        close(cmd);
+      }
+      if (branch != "") {
+        location_cache[pid] = branch "@" folder;
+      } else {
+        location_cache[pid] = folder;
+      }
+      return location_cache[pid];
+    }
     function mark_hidden_chain(pid) {
       while (pid != "" && pid != 0 && !is_agent_root(pid) && !hidden[pid]) {
         hidden[pid] = 1;
@@ -1474,7 +1547,11 @@ render_process_tree() {
       if (depth == 0) {
         root_kind = comm[pid];
       }
-      printf "%-6s %-6s %-7s %s %-*s %s %-*s %s %s%s\n",
+      location_text = "";
+      if (depth == 0) {
+        location_text = short_args(get_location(pid), location_width);
+      }
+      printf "%-6s %-6s %-7s %s %-*s %s %-*s %s %-*s %s%s\n",
         pid,
         ppid[pid],
         rss[pid],
@@ -1485,6 +1562,8 @@ render_process_tree() {
         cpu_bar_field_width,
         render_bar(cpu[pid], cpu_bar_width, "utilization"),
         render_role_text(root_kind, depth, 9),
+        location_width,
+        location_text,
         prefix,
         summary;
 

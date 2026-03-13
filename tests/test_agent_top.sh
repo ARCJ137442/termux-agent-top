@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-ROOT="/data/data/com.termux/files/home/A137442/termux-tools"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SCRIPT="$ROOT/agent-top.sh"
 
 if [ ! -x "$SCRIPT" ]; then
@@ -95,7 +95,7 @@ if ! printf '%s' "$styled_fraction_title_line" | grep -F "FPS: 0.125" >/dev/null
   exit 1
 fi
 
-for pattern in "TERMUX SYSTEM SNAPSHOT" "Tasks:" "Mem:" "Swap:" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM"; do
+for pattern in "TERMUX SYSTEM SNAPSHOT" "Tasks:" "Mem:" "Swap:" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM" "LOCATION"; do
   if ! printf '%s\n' "$output" | grep -F "$pattern" >/dev/null 2>&1; then
     echo "FAIL: missing pattern '$pattern'" >&2
     exit 1
@@ -199,6 +199,16 @@ if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}child" >/dev/null 
   exit 1
 fi
 
+if ! printf '%s' "$styled_diff_output" | grep -F "main@termux-tools" >/dev/null 2>&1; then
+  echo "FAIL: root CLAUDE row should include LOCATION sample" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "scratch" >/dev/null 2>&1; then
+  echo "FAIL: root CODEX row should include folder-only LOCATION sample" >&2
+  exit 1
+fi
+
 if ! printf '%s' "$styled_diff_output" | grep -F "${orange_ansi}CLAUDE: 1 proc  RSS 128.0 MiB${reset_ansi}" >/dev/null 2>&1; then
   echo "FAIL: forced diff output should color the CLAUDE agent summary segment bright orange" >&2
   exit 1
@@ -266,6 +276,11 @@ fi
 table_header_line=$(printf '%s\n' "$styled_output" | grep -F "PID" | head -n 1)
 if ! printf '%s' "$table_header_line" | grep -F "$reverse_ansi" >/dev/null 2>&1; then
   echo "FAIL: forced-style output should render the process table header in reverse video" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$table_header_line" | grep -F "LOCATION" >/dev/null 2>&1; then
+  echo "FAIL: process table header should include LOCATION column" >&2
   exit 1
 fi
 
