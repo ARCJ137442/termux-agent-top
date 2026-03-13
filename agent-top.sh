@@ -1695,7 +1695,8 @@ render_process_tree() {
       if (depth > 0) {
         prefix = prefix "|- ";
       }
-      summary = short_args(compact_home_path(args[pid]), command_width - length(prefix));
+      command_text = prefix compact_home_path(args[pid]);
+      summary = short_args(command_text, command_width);
       mem_percent = safe_percent(rss[pid], mem_total_kb);
       if (depth == 0) {
         root_kind = comm[pid];
@@ -1704,7 +1705,7 @@ render_process_tree() {
       if (depth == 0) {
         location_text = short_args(get_location(pid), location_width);
       }
-      printf "%-6s %-6s %-7s %s %-*s %s %-*s %s %-*s %s%s\n",
+      printf "%-6s %-6s %-7s %s %-*s %s %-*s %s %-*s %-*s\n",
         pid,
         ppid[pid],
         rss[pid],
@@ -1717,7 +1718,7 @@ render_process_tree() {
         render_role_text(root_kind, depth, 9),
         location_width,
         location_text,
-        prefix,
+        command_width,
         summary;
 
       n = split(children[pid], child_ids, " ");
@@ -1869,7 +1870,7 @@ EOF
 
 enter_live_screen() {
   LIVE_SCREEN_ACTIVE=1
-  printf '\033[?1049h\033[?25l'
+  printf '\033[?1049h\033[?25l\033[H\033[J'
 }
 
 leave_live_screen() {
