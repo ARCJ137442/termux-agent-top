@@ -26,6 +26,8 @@ This script targets that workflow directly.
 - `MemAvailable`
 - `SwapFree`
 - `/data` usage
+- Agent CPU (raw core-equivalent)
+- Agent CPU normalized to 0-100 based on detected CPU count
 - Claude process count and total RSS
 - Codex process count and total RSS
 - a parent/child process tree rooted at `claude` and `codex`
