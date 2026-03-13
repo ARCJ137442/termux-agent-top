@@ -24,3 +24,14 @@ Child rows include a `prefix` (indent + `|- `) that is printed outside the comma
 ## Testing
 - The existing narrow-width test in `tests/test_agent_top.sh` should pass after the change.
 - Run full test script to confirm no regressions.
+
+## Additional Fix: Live-Mode ANSI Reliability
+
+### Goal
+Ensure live-mode output always includes the cursor-home (`\033[H`) and clear-to-end (`\033[J`) sequences even if the process is terminated quickly.
+
+### Root Cause
+The sequences are emitted during the first frame diff. If `timeout 1` kills the process before the first frame is drawn, the sequences never appear.
+
+### Approach
+Emit `\033[H\033[J` in `enter_live_screen` along with the alternate-screen and hide-cursor sequences. This guarantees the sequences appear before any frame rendering.

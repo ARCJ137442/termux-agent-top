@@ -75,7 +75,37 @@ git commit -m "fix: clamp command field for narrow widths"
 
 ---
 
-### Task 3: Runtime smoke check
+### Task 3: Stabilize live-mode ANSI sequences
+
+**Files:**
+- Modify: `agent-top.sh`
+
+**Step 1: Implement minimal fix**
+
+In `enter_live_screen`, include cursor-home and clear-to-end sequences:
+
+```sh
+printf '\033[?1049h\033[?25l\033[H\033[J'
+```
+
+**Step 2: Run tests**
+
+```sh
+sh tests/test_agent_top.sh
+```
+
+Expected: PASS.
+
+**Step 3: Commit**
+
+```sh
+git add agent-top.sh
+git commit -m "fix: always emit live-mode cursor clear sequences"
+```
+
+---
+
+### Task 4: Runtime smoke check
 
 **Files:**
 - None
