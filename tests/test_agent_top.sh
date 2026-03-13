@@ -570,6 +570,16 @@ if ! printf '%s' "$diff_output" | grep -F "AgentsCPU:" >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! printf '%s' "$diff_output" | grep -F "AgentsCPU(norm):" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should include an AgentsCPU(norm) summary bar" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$diff_output" | grep -F "27.5%" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should include a normalized AgentsCPU percentage" >&2
+  exit 1
+fi
+
 if ! printf '%s' "$diff_output" | grep -F "AgentsMem:" >/dev/null 2>&1; then
   echo "FAIL: diff mode should include an AgentsMem summary bar" >&2
   exit 1

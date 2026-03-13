@@ -591,6 +591,73 @@ safe_percent() {
   }'
 }
 
+parse_cpu_list_count() {
+  list="$1"
+  awk -v list="$list" 'BEGIN {
+    gsub(/[[:space:]]+/, "", list);
+    if (list == "") {
+      print 0;
+      exit;
+    }
+    n = split(list, parts, ",");
+    total = 0;
+    for (i = 1; i <= n; i++) {
+      if (parts[i] ~ /^[0-9]+-[0-9]+$/) {
+        split(parts[i], range, "-");
+        start = range[1] + 0;
+        end = range[2] + 0;
+        if (end >= start) {
+          total += (end - start + 1);
+        }
+      } else if (parts[i] ~ /^[0-9]+$/) {
+        total += 1;
+      }
+    }
+    print total + 0;
+  }'
+}
+
+detect_cpu_count() {
+  case "$TEST_MODE" in
+    diff|diff_title|resize|risk_warn|risk_hot|risk_crit|risk_cpu_hot|risk_cpu_crit|disk_warn|disk_hot)
+      printf '%s' 2
+      return
+      ;;
+  esac
+
+  if [ -r /proc/self/status ]; then
+    list=$(awk -F':' '/^Cpus_allowed_list:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' /proc/self/status)
+    if [ -n "$list" ]; then
+      count=$(parse_cpu_list_count "$list")
+      if [ "$count" -gt 0 ] 2>/dev/null; then
+        printf '%s' "$count"
+        return
+      fi
+    fi
+  fi
+
+  if [ -r /sys/devices/system/cpu/online ]; then
+    list=$(cat /sys/devices/system/cpu/online 2>/dev/null || :)
+    if [ -n "$list" ]; then
+      count=$(parse_cpu_list_count "$list")
+      if [ "$count" -gt 0 ] 2>/dev/null; then
+        printf '%s' "$count"
+        return
+      fi
+    fi
+  fi
+
+  if command -v nproc >/dev/null 2>&1; then
+    count=$(nproc 2>/dev/null || :)
+    if [ -n "$count" ] && [ "$count" -gt 0 ] 2>/dev/null; then
+      printf '%s' "$count"
+      return
+    fi
+  fi
+
+  printf '1'
+}
+
 determine_risk_level() {
   awk -v mem_available_kb="$MEM_AVAILABLE_KB" -v data_free_percent="$DATA_FREE_PERCENT" -v agent_cpu_percent="${AGENT_CPU_PERCENT:-0}" 'BEGIN {
     severity = 0;
@@ -1686,6 +1753,7 @@ render_dashboard() {
   render_resource_line "/data:" "$DATA_FREE_PERCENT" disk_availability "$data_available_text" "$data_reference_text" "$resource_bar_width" "$resource_available_width"
   render_panel_lines_wrapped "$claude_summary    $codex_summary"
   render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%  ${agent_cpu_cores} cores")"
+  render_panel_lines_wrapped "AgentsCPU(norm): $(render_bar "$AGENT_CPU_NORM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_NORM_PERCENT" utilization "%")"
   render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_MEM_PERCENT" utilization "%")"
   if [ "$STYLE_ENABLED" -eq 0 ]; then
     render_plain_header_line
@@ -1717,6 +1785,20 @@ run_once() {
   collect_system_metrics
   collect_agent_rollup
   collect_task_metrics
+  CPU_COUNT=$(detect_cpu_count)
+  AGENT_CPU_NORM_PERCENT=$(awk -v percent="$AGENT_CPU_PERCENT" -v count="$CPU_COUNT" 'BEGIN {
+    if (count <= 0) {
+      count = 1;
+    }
+    value = percent / count;
+    if (value < 0) {
+      value = 0;
+    }
+    if (value > 100) {
+      value = 100;
+    }
+    printf "%.1f", value;
+  }')
   RISK_LEVEL=$(determine_risk_level)
   render_dashboard
 }
