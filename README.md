@@ -54,6 +54,14 @@ Change refresh interval:
 ./agent-top.sh --interval 5
 ```
 
+Configure which processes are treated as agent roots:
+
+```sh
+AGENT_TOP_ROOTS=claude,codex,ai-cli ./agent-top.sh --once
+```
+
+If `AGENT_TOP_ROOTS` is unset or empty, the default is `claude,codex`.
+
 ## Requirements
 
 - POSIX `sh`

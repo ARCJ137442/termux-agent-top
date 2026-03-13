@@ -591,6 +591,50 @@ safe_percent() {
   }'
 }
 
+parse_agent_roots() {
+  input="$1"
+  if [ -z "$input" ]; then
+    input="claude,codex"
+  fi
+  printf '%s' "$input" | awk -F',' '
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s);
+      return s;
+    }
+    {
+      for (i = 1; i <= NF; i++) {
+        value = trim($i);
+        if (value != "" && !seen[value]++) {
+          roots[count++] = value;
+        }
+      }
+    }
+    END {
+      if (count == 0) {
+        split("claude,codex", fallback, ",");
+        for (i = 1; i <= 2; i++) {
+          value = fallback[i];
+          if (!seen[value]++) {
+            roots[count++] = value;
+          }
+        }
+      }
+      for (i = 0; i < count; i++) {
+        printf "%s%s", roots[i], (i + 1 < count ? " " : "");
+      }
+    }'
+}
+
+agent_root_in_list() {
+  target="$1"
+  for root in $AGENT_ROOT_LIST; do
+    if [ "$root" = "$target" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 parse_cpu_list_count() {
   list="$1"
   awk -v list="$list" 'BEGIN {
@@ -966,8 +1010,8 @@ collect_system_metrics() {
 collect_agent_rollup() {
   if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "resize" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "risk_cpu_hot" ] || [ "$TEST_MODE" = "risk_cpu_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
     if [ "$LOOP_ITERATION" -le 1 ]; then
-      CLAUDE_COUNT=1
-      CLAUDE_RSS_KB=131072
+      claude_count=1
+      claude_rss_kb=131072
       case "$TEST_MODE" in
         risk_cpu_hot)
           AGENT_CPU_PERCENT=150.0
@@ -981,8 +1025,8 @@ collect_agent_rollup() {
       esac
       AGENT_MEM_PERCENT=7.8
     else
-      CLAUDE_COUNT=2
-      CLAUDE_RSS_KB=262144
+      claude_count=2
+      claude_rss_kb=262144
       case "$TEST_MODE" in
         risk_cpu_hot)
           AGENT_CPU_PERCENT=150.0
@@ -996,20 +1040,44 @@ collect_agent_rollup() {
       esac
       AGENT_MEM_PERCENT=10.9
     fi
-    CODEX_COUNT=1
-    CODEX_RSS_KB=196608
+    codex_count=1
+    codex_rss_kb=196608
+    AGENT_ROOT_SUMMARY=""
+    for root in $AGENT_ROOT_LIST; do
+      case "$root" in
+        claude)
+          root_count=$claude_count
+          root_rss_kb=$claude_rss_kb
+          ;;
+        codex)
+          root_count=$codex_count
+          root_rss_kb=$codex_rss_kb
+          ;;
+        *)
+          root_count=0
+          root_rss_kb=0
+          ;;
+      esac
+      AGENT_ROOT_SUMMARY="${AGENT_ROOT_SUMMARY}${AGENT_ROOT_SUMMARY:+ }${root}:${root_count}:${root_rss_kb}"
+    done
     return
   fi
 
   eval "$(
-    ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= | awk -v monitor_pid="$MONITOR_PID" -v mem_total_kb="$MEM_TOTAL_KB" '
+    ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= | awk -v monitor_pid="$MONITOR_PID" -v mem_total_kb="$MEM_TOTAL_KB" -v root_list="$AGENT_ROOT_LIST" '
       function trim(s) {
         sub(/^[[:space:]]+/, "", s);
         sub(/[[:space:]]+$/, "", s);
         return s;
       }
       function is_agent_root(pid) {
-        return comm[pid] == "claude" || comm[pid] == "codex";
+        return root[comm[pid]] == 1;
+      }
+      BEGIN {
+        root_count = split(root_list, root_names, " ");
+        for (i = 1; i <= root_count; i++) {
+          root[root_names[i]] = 1;
+        }
       }
       function mark_hidden_chain(pid) {
         while (pid != "" && pid != 0 && !is_agent_root(pid) && !hidden[pid]) {
@@ -1076,34 +1144,37 @@ collect_agent_rollup() {
         args[pid_val] = args_val;
         children[ppid_val] = children[ppid_val] " " pid_val;
 
-        if (comm_val == "claude" || comm_val == "codex") {
-          root_order[++root_count] = pid_val;
+        if (root[comm_val]) {
+          root_order[++root_pid_count] = pid_val;
         }
       }
       END {
         mark_hidden_chain(monitor_pid);
         mark_hidden_descendants(monitor_pid);
 
-        for (i = 1; i <= root_count; i++) {
+        for (i = 1; i <= root_pid_count; i++) {
           pid_val = root_order[i];
           if (!hidden[pid_val]) {
-            if (comm[pid_val] == "claude") {
-              claude_count++;
-              claude_rss += rss[pid_val];
-            }
-            if (comm[pid_val] == "codex") {
-              codex_count++;
-              codex_rss += rss[pid_val];
-            }
+            root_count_map[comm[pid_val]]++;
+            root_rss_map[comm[pid_val]] += rss[pid_val];
             agent_cpu += sum_visible_cpu(pid_val);
             agent_rss += sum_visible_rss(pid_val);
           }
         }
 
-        printf "CLAUDE_COUNT=%d\n", claude_count;
-        printf "CLAUDE_RSS_KB=%d\n", claude_rss;
-        printf "CODEX_COUNT=%d\n", codex_count;
-        printf "CODEX_RSS_KB=%d\n", codex_rss;
+        summary = "";
+        for (i = 1; i <= root_count; i++) {
+          name = root_names[i];
+          count = root_count_map[name] + 0;
+          rss_total = root_rss_map[name] + 0;
+          if (summary != "") {
+            summary = summary " ";
+          }
+          summary = summary name ":" count ":" rss_total;
+        }
+        escaped = summary;
+        gsub(/["\\]/, "\\\\&", escaped);
+        printf "AGENT_ROOT_SUMMARY=\"%s\"\n", escaped;
         printf "AGENT_CPU_PERCENT=%.1f\n", agent_cpu;
         if (mem_total_kb > 0) {
           printf "AGENT_MEM_PERCENT=%.1f\n", (agent_rss / mem_total_kb) * 100.0;
@@ -1395,21 +1466,25 @@ render_process_tree() {
     sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
     sample_bar_low="$(render_bar 12.5 "$CPU_BAR_WIDTH" utilization)"
     sample_bar_mid="$(render_bar 55 "$CPU_BAR_WIDTH" utilization)"
-    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1234 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 12.5 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" "$(render_role_field claude CLAUDE 9)" "$sample_location_field_claude" claude
-    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1456 1234 4096 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 4.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 4.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude child 9)" "$sample_location_field_empty" "|- helper"
-    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 2345 1 98304 "$(render_metric_field 2.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" "$(render_metric_field 55.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" "$(render_role_field codex CODEX 9)" "$sample_location_field_codex" "node $sample_path"
-    printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 2456 2345 5120 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 8.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 8.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field codex child 9)" "$sample_location_field_empty" "|- worker"
+    if agent_root_in_list claude; then
+      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1234 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 12.5 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" "$(render_role_field claude CLAUDE 9)" "$sample_location_field_claude" claude
+      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1456 1234 4096 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 4.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 4.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude child 9)" "$sample_location_field_empty" "|- helper"
+    fi
+    if agent_root_in_list codex; then
+      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 2345 1 98304 "$(render_metric_field 2.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" "$(render_metric_field 55.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" "$(render_role_field codex CODEX 9)" "$sample_location_field_codex" "node $sample_path"
+      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 2456 2345 5120 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 8.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 8.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field codex child 9)" "$sample_location_field_empty" "|- worker"
+    fi
     return
   fi
 
-  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" '
+  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
       return s;
     }
     function is_agent_root(pid) {
-      return comm[pid] == "claude" || comm[pid] == "codex";
+      return root[comm[pid]] == 1;
     }
     function role_label(root_kind, depth) {
       if (depth == 0) {
@@ -1419,6 +1494,7 @@ render_process_tree() {
         if (root_kind == "codex") {
           return "CODEX";
         }
+        return toupper(root_kind);
       }
       return "child";
     }
@@ -1530,6 +1606,12 @@ render_process_tree() {
         text = substr(text, pos + length(home_prefix));
       }
       return result text;
+    }
+    BEGIN {
+      root_name_count = split(root_list, root_names, " ");
+      for (i = 1; i <= root_name_count; i++) {
+        root[root_names[i]] = 1;
+      }
     }
     function dq_quote(text,    result, i, ch) {
       result = "\"";
@@ -1662,15 +1744,15 @@ render_process_tree() {
       args[pid_val] = args_val;
       children[ppid_val] = children[ppid_val] " " pid_val;
 
-      if (comm_val == "claude" || comm_val == "codex") {
-        root_order[++root_count] = pid_val;
+      if (root[comm_val]) {
+        root_order[++root_pid_count] = pid_val;
       }
     }
     END {
       mark_hidden_chain(monitor_pid);
       mark_hidden_descendants(monitor_pid);
 
-      for (i = 1; i <= root_count; i++) {
+      for (i = 1; i <= root_pid_count; i++) {
         pid_val = root_order[i];
         if (!hidden[pid_val] && !printed[pid_val]) {
           printed[pid_val] = 1;
@@ -1707,8 +1789,6 @@ render_dashboard() {
   buffers_mib=$(to_mib "$BUFFERS_KB")
   swap_free_mib=$(to_mib "$SWAP_FREE_KB")
   cached_mib=$(to_mib "$CACHED_KB")
-  claude_rss_mib=$(to_mib "$CLAUDE_RSS_KB")
-  codex_rss_mib=$(to_mib "$CODEX_RSS_KB")
   data_available_gib=$(awk -v blocks="$DATA_AVAILABLE_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
   data_used_gib=$(awk -v blocks="$DATA_USED_BLOCKS" 'BEGIN { printf "%.1f", blocks / 2097152.0 }')
   mem_available_text="$mem_available_mib MiB free"
@@ -1737,8 +1817,21 @@ render_dashboard() {
     resource_reference_width=$current_width
   fi
   resource_bar_width=$(compute_resource_bar_width "$resource_available_width" "$resource_reference_width")
-  claude_summary=$(render_colored_text "CLAUDE: $CLAUDE_COUNT proc  RSS $claude_rss_mib MiB" "$(role_color_code claude)")
-  codex_summary=$(render_colored_text "CODEX: $CODEX_COUNT proc  RSS $codex_rss_mib MiB" "$(role_color_code codex)")
+  agent_summary=""
+  for root_entry in $AGENT_ROOT_SUMMARY; do
+    IFS=':' read -r root_name root_count root_rss_kb <<EOF
+$root_entry
+EOF
+    root_rss_mib=$(to_mib "$root_rss_kb")
+    root_label=$(printf '%s' "$root_name" | awk '{ print toupper($0) }')
+    summary_part="${root_label}: ${root_count} proc  RSS ${root_rss_mib} MiB"
+    summary_part=$(render_colored_text "$summary_part" "$(role_color_code "$root_name")")
+    if [ -n "$agent_summary" ]; then
+      agent_summary="${agent_summary}    ${summary_part}"
+    else
+      agent_summary="$summary_part"
+    fi
+  done
 
   if [ "$STYLE_ENABLED" -eq 1 ]; then
     render_title_bar "$now"
@@ -1751,7 +1844,7 @@ render_dashboard() {
   render_resource_line "Mem:" "$MEM_AVAILABLE_PERCENT" availability "$mem_available_text" "$mem_reference_text" "$resource_bar_width" "$resource_available_width"
   render_resource_line "Swap:" "$SWAP_FREE_PERCENT" availability "$swap_available_text" "$swap_reference_text" "$resource_bar_width" "$resource_available_width"
   render_resource_line "/data:" "$DATA_FREE_PERCENT" disk_availability "$data_available_text" "$data_reference_text" "$resource_bar_width" "$resource_available_width"
-  render_panel_lines_wrapped "$claude_summary    $codex_summary"
+  render_panel_lines_wrapped "$agent_summary"
   render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%  ${agent_cpu_cores} cores")"
   render_panel_lines_wrapped "AgentsCPU(norm): $(render_bar "$AGENT_CPU_NORM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_NORM_PERCENT" utilization "%")"
   render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_MEM_PERCENT" utilization "%")"
@@ -1782,6 +1875,7 @@ handle_live_termination() {
 }
 
 run_once() {
+  AGENT_ROOT_LIST=$(parse_agent_roots "${AGENT_TOP_ROOTS:-}")
   collect_system_metrics
   collect_agent_rollup
   collect_task_metrics

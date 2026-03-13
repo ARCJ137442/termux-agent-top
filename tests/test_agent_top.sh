@@ -102,6 +102,18 @@ for pattern in "TERMUX SYSTEM SNAPSHOT" "Tasks:" "Mem:" "Swap:" "CLAUDE" "CODEX"
   fi
 done
 
+custom_output=$(AGENT_TOP_ROOTS=codex,claude CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
+if ! printf '%s' "$custom_output" | grep -F "CODEX:" >/dev/null 2>&1; then
+  echo "FAIL: custom root list should still include CODEX summary" >&2
+  exit 1
+fi
+
+custom_output=$(AGENT_TOP_ROOTS=codex CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
+if printf '%s' "$custom_output" | grep -F "CLAUDE:" >/dev/null 2>&1; then
+  echo "FAIL: custom root list should omit CLAUDE summary when not configured" >&2
+  exit 1
+fi
+
 plain_tasks_line=$(printf '%s\n' "$plain_diff_output" | awk '/Tasks:/ { print; exit }')
 if ! printf '%s' "$plain_tasks_line" | grep -F "Tasks:" >/dev/null 2>&1; then
   echo "FAIL: plain diff output should render a dedicated Tasks line" >&2
