@@ -40,6 +40,12 @@ Run a one-shot snapshot:
 ./agent-top.sh --once
 ```
 
+Run a summary-only snapshot (omit the process tree):
+
+```sh
+./agent-top.sh --once --summary-only
+```
+
 Run a live view:
 
 ```sh
