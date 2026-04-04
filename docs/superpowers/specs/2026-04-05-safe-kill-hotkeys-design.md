@@ -49,9 +49,13 @@ When the user presses `k`:
 2. If no candidate exists, show `NO TARGET`.
 3. If a candidate exists and no target is armed, store that target as the armed target and show:
    `ARMED: press k again to kill rustc[4002] (87.5%)`
-4. If the same target is still armed and the user presses `k` again before the arm expires, execute the kill and show the existing success/failure message:
+4. If the user presses `k` again before the arm expires, do not re-target based on the current top CPU process. The second keypress is always tied to the originally armed PID.
+5. If that armed PID still exists and is still killable, execute the kill and show the existing success/failure message:
    - `KILLED rustc[4002] (87.5%)`
    - `KILL FAILED rustc[4002]`
+6. If the armed PID is gone by the time the second `k` arrives, clear the old arm. If there is a new eligible candidate on that same keypress, immediately arm the new target and show:
+   `REARMED: press k again to kill node[4003] (40.0%)`
+7. If the armed PID is gone and no new candidate exists, show `NO TARGET`.
 
 ### Arm Expiration
 
@@ -93,9 +97,9 @@ The implementation should treat this as ephemeral UI state only. It must not aff
 
 1. Live input reads a keypress.
 2. `k` routes through an arm-or-confirm handler instead of directly calling kill.
-3. The handler selects the current top candidate using the existing selector.
-4. If not armed, store the selected candidate and publish an armed status message.
-5. If already armed and still valid, execute the existing kill path for that PID.
+3. If no target is currently armed, the handler selects the current top candidate using the existing selector, stores it, and publishes an armed status message.
+4. If a target is already armed, the handler first tries to confirm against that exact armed PID rather than re-running target selection for a different PID.
+5. If the armed PID is no longer valid, the handler clears the old arm and then checks whether the current keypress can arm a replacement target, producing `REARMED` when successful.
 6. After each refresh, validate whether the armed state has expired and clear it if needed.
 
 Bulk kill continues to use the existing multi-target selection and kill loop.
@@ -103,8 +107,8 @@ Bulk kill continues to use the existing multi-target selection and kill loop.
 ## Error Handling
 
 - If no candidate exists during the first `k`, show `NO TARGET`.
-- If the armed target disappears before confirmation, clear the arm and treat the next `k` as a fresh arm attempt.
-- If the second `k` finds that the armed PID is now invalid or no longer killable, clear the arm and show `NO TARGET`.
+- If the armed target disappears before confirmation, the next `k` should first try to rearm a replacement target and only fall back to `NO TARGET` when no candidate exists.
+- If the second `k` finds that the armed PID is now invalid or no longer killable but a replacement candidate exists, show `REARMED: press k again to kill ...`.
 - If the kill syscall fails, reuse `KILL FAILED <label>`.
 - Root processes remain excluded exactly as they are today.
 
