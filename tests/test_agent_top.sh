@@ -70,6 +70,16 @@ case "$fps_title_line" in
     ;;
 esac
 
+default_title_line=$(printf '%s\n' "$output" | sed -n '2p')
+case "$default_title_line" in
+  *"FPS: 1  RISK: "*)
+    ;;
+  *)
+    echo "FAIL: default output should refresh at 1 FPS / 1 second intervals" >&2
+    exit 1
+    ;;
+esac
+
 fps_zero_title_line=$(printf '%s\n' "$fps_zero_output" | sed -n '2p')
 case "$fps_zero_title_line" in
   *"FPS: max  RISK: "*)
@@ -531,7 +541,19 @@ if printf '%s\n' "$path_output" | grep -F "/data/data/com.termux/files/home/" >/
 fi
 
 live_output_file=$(mktemp)
-trap 'rm -f "$live_output_file"' EXIT INT TERM
+kill_log_file=$(mktemp)
+kill_output_file=$(mktemp)
+no_target_log_file=$(mktemp)
+no_target_output_file=$(mktemp)
+kill_fail_log_file=$(mktemp)
+kill_fail_output_file=$(mktemp)
+bulk_kill_log_file=$(mktemp)
+bulk_kill_output_file=$(mktemp)
+bulk_no_target_log_file=$(mktemp)
+bulk_no_target_output_file=$(mktemp)
+bulk_partial_log_file=$(mktemp)
+bulk_partial_output_file=$(mktemp)
+trap 'rm -f "$live_output_file" "$kill_log_file" "$kill_output_file" "$no_target_log_file" "$no_target_output_file" "$kill_fail_log_file" "$kill_fail_output_file" "$bulk_kill_log_file" "$bulk_kill_output_file" "$bulk_no_target_log_file" "$bulk_no_target_output_file" "$bulk_partial_log_file" "$bulk_partial_output_file"' EXIT INT TERM
 
 set +e
 timeout 1 sh "$SCRIPT" --interval 10 >"$live_output_file" 2>&1
@@ -561,6 +583,173 @@ done
 
 if printf '%s' "$live_output" | grep -F "$(printf '\033[2J')" >/dev/null 2>&1; then
   echo "FAIL: live mode should avoid full-screen clear" >&2
+  exit 1
+fi
+
+set +e
+printf 'k' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill CODEX_TOP_TEST_KILL_LOG=$kill_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$kill_output_file" 2>&1
+kill_hotkey_status=$?
+set -e
+
+if [ "$kill_hotkey_status" -ne 0 ] && [ "$kill_hotkey_status" -ne 124 ] && [ "$kill_hotkey_status" -ne 143 ]; then
+  echo "FAIL: live hotkey kill test should only exit normally or via timeout/termination" >&2
+  exit 1
+fi
+
+kill_hotkey_output=$(cat "$kill_output_file")
+
+if ! printf '%s' "$kill_hotkey_output" | grep -F "KILLED rustc[4002] (87.5%)" >/dev/null 2>&1; then
+  echo "FAIL: pressing k should report the killed highest-CPU non-root child process" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$(cat "$kill_log_file")" | grep -F -- "-9 4002" >/dev/null 2>&1; then
+  echo "FAIL: pressing k should send SIGKILL to the highest-CPU non-root child process" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$(cat "$kill_log_file")" | grep -F -- "-9 3001" >/dev/null 2>&1; then
+  echo "FAIL: pressing k should never kill agent root processes even if they use more CPU" >&2
+  exit 1
+fi
+
+set +e
+printf 'k' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_no_target CODEX_TOP_TEST_KILL_LOG=$no_target_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$no_target_output_file" 2>&1
+no_target_status=$?
+set -e
+
+if [ "$no_target_status" -ne 0 ] && [ "$no_target_status" -ne 124 ] && [ "$no_target_status" -ne 143 ]; then
+  echo "FAIL: no-target hotkey kill test should only exit normally or via timeout/termination" >&2
+  exit 1
+fi
+
+no_target_output=$(cat "$no_target_output_file")
+
+if ! printf '%s' "$no_target_output" | grep -F "NO TARGET" >/dev/null 2>&1; then
+  echo "FAIL: pressing k with no child candidates should report NO TARGET" >&2
+  exit 1
+fi
+
+if [ -s "$no_target_log_file" ]; then
+  echo "FAIL: pressing k with no child candidates should not attempt any kill" >&2
+  exit 1
+fi
+
+set +e
+printf 'k' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_fail CODEX_TOP_TEST_KILL_LOG=$kill_fail_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$kill_fail_output_file" 2>&1
+kill_fail_status=$?
+set -e
+
+if [ "$kill_fail_status" -ne 0 ] && [ "$kill_fail_status" -ne 124 ] && [ "$kill_fail_status" -ne 143 ]; then
+  echo "FAIL: failed-kill hotkey test should only exit normally or via timeout/termination" >&2
+  exit 1
+fi
+
+kill_fail_output=$(cat "$kill_fail_output_file")
+
+if ! printf '%s' "$kill_fail_output" | grep -F "KILL FAILED rustc[4002]" >/dev/null 2>&1; then
+  echo "FAIL: pressing k should report kill failures for the selected child process" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$(cat "$kill_fail_log_file")" | grep -F -- "-9 4002" >/dev/null 2>&1; then
+  echo "FAIL: failed kill tests should still attempt SIGKILL on the selected child process" >&2
+  exit 1
+fi
+
+set +e
+printf '\013' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_all CODEX_TOP_TEST_KILL_LOG=$bulk_kill_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$bulk_kill_output_file" 2>&1
+bulk_kill_status=$?
+set -e
+
+if [ "$bulk_kill_status" -ne 0 ] && [ "$bulk_kill_status" -ne 124 ] && [ "$bulk_kill_status" -ne 143 ]; then
+  echo "FAIL: Ctrl+K bulk-kill success test should only exit normally or via timeout/termination" >&2
+  exit 1
+fi
+
+bulk_kill_output=$(cat "$bulk_kill_output_file")
+
+if ! printf '%s' "$bulk_kill_output" | grep -F "KILLED ALL 2 CHILDREN" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K should report a full bulk-kill success count" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$(cat "$bulk_kill_log_file")" | grep -F -- "-9 4002" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K bulk kill should log the first child PID" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$(cat "$bulk_kill_log_file")" | grep -F -- "-9 4003" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K bulk kill should log the second child PID" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$(cat "$bulk_kill_log_file")" | grep -F -- "-9 3001" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K bulk kill should never log SIGKILL for the CLAUDE root PID" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$(cat "$bulk_kill_log_file")" | grep -F -- "-9 3002" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K bulk kill should never log SIGKILL for the CODEX root PID" >&2
+  exit 1
+fi
+
+set +e
+printf '\013' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_all_no_target CODEX_TOP_TEST_KILL_LOG=$bulk_no_target_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$bulk_no_target_output_file" 2>&1
+bulk_no_target_status=$?
+set -e
+
+if [ "$bulk_no_target_status" -ne 0 ] && [ "$bulk_no_target_status" -ne 124 ] && [ "$bulk_no_target_status" -ne 143 ]; then
+  echo "FAIL: Ctrl+K bulk-kill no-target test should only exit normally or via timeout/termination" >&2
+  exit 1
+fi
+
+bulk_no_target_output=$(cat "$bulk_no_target_output_file")
+
+if ! printf '%s' "$bulk_no_target_output" | grep -F "NO TARGET" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K with no child candidates should report NO TARGET" >&2
+  exit 1
+fi
+
+if [ -s "$bulk_no_target_log_file" ]; then
+  echo "FAIL: Ctrl+K with no child candidates should not attempt any kill" >&2
+  exit 1
+fi
+
+set +e
+printf '\013' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_all_partial_fail CODEX_TOP_TEST_KILL_LOG=$bulk_partial_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$bulk_partial_output_file" 2>&1
+bulk_partial_status=$?
+set -e
+
+if [ "$bulk_partial_status" -ne 0 ] && [ "$bulk_partial_status" -ne 124 ] && [ "$bulk_partial_status" -ne 143 ]; then
+  echo "FAIL: Ctrl+K bulk-kill partial-failure test should only exit normally or via timeout/termination" >&2
+  exit 1
+fi
+
+bulk_partial_output=$(cat "$bulk_partial_output_file")
+
+if ! printf '%s' "$bulk_partial_output" | grep -F "KILLED 1/2 CHILDREN" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K should report partial bulk-kill success counts" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$(cat "$bulk_partial_log_file")" | grep -F -- "-9 4002" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K partial failure should still log the first child PID" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$(cat "$bulk_partial_log_file")" | grep -F -- "-9 4003" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K partial failure should still log the second child PID" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$(cat "$bulk_partial_log_file")" | grep -F -- "-9 3001" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K partial failure should never log SIGKILL for the CLAUDE root PID" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$(cat "$bulk_partial_log_file")" | grep -F -- "-9 3002" >/dev/null 2>&1; then
+  echo "FAIL: Ctrl+K partial failure should never log SIGKILL for the CODEX root PID" >&2
   exit 1
 fi
 

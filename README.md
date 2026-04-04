@@ -52,7 +52,14 @@ Run a live view:
 ./agent-top.sh
 ```
 
-Live mode switches to the terminal's alternate screen, redraws in place, and restores the previous screen when it exits. This reduces visible flicker compared with clearing the whole screen each refresh.
+Live mode refreshes once per second by default, switches to the terminal's alternate screen, redraws in place, and restores the previous screen when it exits. This reduces visible flicker compared with clearing the whole screen each refresh.
+
+While live mode is running:
+
+- press `k` to immediately `SIGKILL` the highest-CPU non-root child process under the configured agent roots
+- press `Ctrl+K` to `SIGKILL` all non-root child processes under the configured agent roots
+
+Root `claude`/`codex` processes are never selected by either hotkey.
 
 Change refresh interval:
 

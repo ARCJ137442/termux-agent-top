@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-INTERVAL_SECONDS=2
+INTERVAL_SECONDS=1
 FPS_LABEL=""
 RUN_ONCE=0
 SUMMARY_ONLY=0
@@ -33,6 +33,13 @@ PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
 PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
 STYLE_ENABLED=0
 RESIZE_PENDING=0
+TTY_INPUT_READY=0
+TTY_STATE=""
+STATUS_MESSAGE=""
+STATUS_TTL=0
+STATUS_TTL_FRAMES=3
+TEST_KILL_LOG="${CODEX_TOP_TEST_KILL_LOG:-}"
+CTRL_K_CHAR="$(printf '\013')"
 ANSI_REVERSE="$(printf '\033[7m')"
 ANSI_RESET="$(printf '\033[0m')"
 ANSI_BOLD="$(printf '\033[1m')"
@@ -55,7 +62,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --interval)
       shift
-      INTERVAL_SECONDS="${1:-2}"
+      INTERVAL_SECONDS="${1:-1}"
       ;;
     *)
       echo "usage: $0 [--once] [--summary-only] [--interval seconds]" >&2
@@ -177,6 +184,16 @@ configure_layout() {
 }
 
 configure_layout
+
+is_fixture_mode() {
+  case "$TEST_MODE" in
+    diff|diff_title|resize|risk_warn|risk_hot|risk_crit|risk_cpu_hot|risk_cpu_crit|disk_warn|disk_hot|hotkey_kill|hotkey_no_target|hotkey_kill_fail|hotkey_kill_all|hotkey_kill_all_no_target|hotkey_kill_all_partial_fail)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
 
 compact_home_path() {
   text="$1"
@@ -666,12 +683,10 @@ parse_cpu_list_count() {
 }
 
 detect_cpu_count() {
-  case "$TEST_MODE" in
-    diff|diff_title|resize|risk_warn|risk_hot|risk_crit|risk_cpu_hot|risk_cpu_crit|disk_warn|disk_hot)
-      printf '%s' 2
-      return
-      ;;
-  esac
+  if is_fixture_mode; then
+    printf '%s' 2
+    return
+  fi
 
   if [ -r /proc/self/status ]; then
     list=$(awk -F':' '/^Cpus_allowed_list:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' /proc/self/status)
@@ -868,9 +883,361 @@ sleep_until_refresh() {
   done
 }
 
+set_status_message() {
+  STATUS_MESSAGE="$1"
+  STATUS_TTL="$STATUS_TTL_FRAMES"
+}
+
+tick_status_message() {
+  if [ "${STATUS_TTL:-0}" -le 0 ]; then
+    return
+  fi
+
+  STATUS_TTL=$((STATUS_TTL - 1))
+  if [ "$STATUS_TTL" -le 0 ]; then
+    STATUS_TTL=0
+    STATUS_MESSAGE=""
+  fi
+}
+
+tty_input_available() {
+  tty >/dev/null 2>&1
+}
+
+configure_live_input() {
+  if [ "$RUN_ONCE" -eq 1 ] || ! tty_input_available; then
+    return
+  fi
+
+  TTY_STATE=$(stty -g </dev/tty 2>/dev/null || :)
+  if [ -z "$TTY_STATE" ]; then
+    return
+  fi
+
+  if stty -icanon -echo min 0 time 0 </dev/tty 2>/dev/null; then
+    TTY_INPUT_READY=1
+  else
+    TTY_STATE=""
+  fi
+}
+
+restore_live_input() {
+  if [ "$TTY_INPUT_READY" -eq 1 ] && [ -n "$TTY_STATE" ] && tty_input_available; then
+    stty "$TTY_STATE" </dev/tty 2>/dev/null || :
+  fi
+
+  TTY_INPUT_READY=0
+  TTY_STATE=""
+}
+
+read_live_keypress() {
+  if [ "$TTY_INPUT_READY" -ne 1 ]; then
+    return
+  fi
+
+  dd bs=1 count=1 iflag=nonblock if=/dev/tty 2>/dev/null || :
+}
+
+format_target_label() {
+  pid="$1"
+  command_name="$2"
+  printf '%s[%s]' "$command_name" "$pid"
+}
+
+select_hotkey_target() {
+  case "$TEST_MODE" in
+    hotkey_kill|hotkey_kill_fail)
+      printf '4002\t87.5\trustc\n'
+      return
+      ;;
+    hotkey_no_target)
+      return
+      ;;
+  esac
+
+  root_list=$(parse_agent_roots "${AGENT_TOP_ROOTS:-}")
+
+  ps -eo pid=,ppid=,pcpu=,comm=,args= | awk -v monitor_pid="$MONITOR_PID" -v root_list="$root_list" '
+    function trim(s) {
+      sub(/^[[:space:]]+/, "", s);
+      sub(/[[:space:]]+$/, "", s);
+      return s;
+    }
+    function is_agent_root(pid) {
+      return root[comm[pid]] == 1;
+    }
+    function mark_hidden_chain(pid) {
+      while (pid != "" && pid != 0 && !is_agent_root(pid) && !hidden[pid]) {
+        hidden[pid] = 1;
+        pid = ppid[pid];
+      }
+    }
+    function mark_hidden_descendants(pid, child_ids, n, i, child_pid) {
+      hidden[pid] = 1;
+
+      n = split(children[pid], child_ids, " ");
+      for (i = 1; i <= n; i++) {
+        child_pid = child_ids[i];
+        if (child_pid != "" && !hidden[child_pid]) {
+          mark_hidden_descendants(child_pid);
+        }
+      }
+    }
+    function scan_descendants(pid, depth, child_ids, n, i, child_pid, cpu_val) {
+      if (hidden[pid]) {
+        return;
+      }
+
+      if (depth > 0) {
+        cpu_val = cpu[pid] + 0;
+        if (!found || cpu_val > best_cpu) {
+          found = 1;
+          best_pid = pid;
+          best_cpu = cpu_val;
+          best_comm = comm[pid];
+        }
+      }
+
+      n = split(children[pid], child_ids, " ");
+      for (i = 1; i <= n; i++) {
+        child_pid = child_ids[i];
+        if (child_pid != "") {
+          scan_descendants(child_pid, depth + 1);
+        }
+      }
+    }
+    BEGIN {
+      root_count = split(root_list, root_names, " ");
+      for (i = 1; i <= root_count; i++) {
+        root[root_names[i]] = 1;
+      }
+    }
+    {
+      pid_val = $1;
+      ppid_val = $2;
+      cpu_val = $3;
+      comm_val = $4;
+
+      $1 = ""; $2 = ""; $3 = ""; $4 = "";
+      args_val = trim($0);
+
+      pid[pid_val] = pid_val;
+      ppid[pid_val] = ppid_val;
+      cpu[pid_val] = cpu_val + 0;
+      comm[pid_val] = comm_val;
+      args[pid_val] = args_val;
+      children[ppid_val] = children[ppid_val] " " pid_val;
+
+      if (root[comm_val]) {
+        root_order[++root_pid_count] = pid_val;
+      }
+    }
+    END {
+      mark_hidden_chain(monitor_pid);
+      mark_hidden_descendants(monitor_pid);
+
+      for (i = 1; i <= root_pid_count; i++) {
+        pid_val = root_order[i];
+        if (!hidden[pid_val]) {
+          scan_descendants(pid_val, 0);
+        }
+      }
+
+      if (found) {
+        printf "%s\t%.1f\t%s\n", best_pid, best_cpu, best_comm;
+      }
+    }
+  '
+}
+
+select_hotkey_targets() {
+  case "$TEST_MODE" in
+    hotkey_kill_all|hotkey_kill_all_partial_fail)
+      printf '4002\trustc\n4003\tnode\n'
+      return
+      ;;
+    hotkey_kill_all_no_target)
+      return
+      ;;
+  esac
+
+  root_list=$(parse_agent_roots "${AGENT_TOP_ROOTS:-}")
+
+  ps -eo pid=,ppid=,pcpu=,comm=,args= | awk -v monitor_pid="$MONITOR_PID" -v root_list="$root_list" '
+    function trim(s) {
+      sub(/^[[:space:]]+/, "", s);
+      sub(/[[:space:]]+$/, "", s);
+      return s;
+    }
+    function is_agent_root(pid) {
+      return root[comm[pid]] == 1;
+    }
+    function mark_hidden_chain(pid) {
+      while (pid != "" && pid != 0 && !is_agent_root(pid) && !hidden[pid]) {
+        hidden[pid] = 1;
+        pid = ppid[pid];
+      }
+    }
+    function mark_hidden_descendants(pid, child_ids, n, i, child_pid) {
+      hidden[pid] = 1;
+
+      n = split(children[pid], child_ids, " ");
+      for (i = 1; i <= n; i++) {
+        child_pid = child_ids[i];
+        if (child_pid != "" && !hidden[child_pid]) {
+          mark_hidden_descendants(child_pid);
+        }
+      }
+    }
+    function emit_descendants(pid, depth, child_ids, n, i, child_pid) {
+      if (hidden[pid]) {
+        return;
+      }
+
+      if (depth > 0) {
+        printf "%s\t%s\n", pid, comm[pid];
+      }
+
+      n = split(children[pid], child_ids, " ");
+      for (i = 1; i <= n; i++) {
+        child_pid = child_ids[i];
+        if (child_pid != "") {
+          emit_descendants(child_pid, depth + 1);
+        }
+      }
+    }
+    BEGIN {
+      root_count = split(root_list, root_names, " ");
+      for (i = 1; i <= root_count; i++) {
+        root[root_names[i]] = 1;
+      }
+    }
+    {
+      pid_val = $1;
+      ppid_val = $2;
+      comm_val = $4;
+
+      pid[pid_val] = pid_val;
+      ppid[pid_val] = ppid_val;
+      comm[pid_val] = comm_val;
+      children[ppid_val] = children[ppid_val] " " pid_val;
+
+      if (root[comm_val]) {
+        root_order[++root_pid_count] = pid_val;
+      }
+    }
+    END {
+      mark_hidden_chain(monitor_pid);
+      mark_hidden_descendants(monitor_pid);
+
+      for (i = 1; i <= root_pid_count; i++) {
+        pid_val = root_order[i];
+        if (!hidden[pid_val]) {
+          emit_descendants(pid_val, 0);
+        }
+      }
+    }
+  '
+}
+
+execute_hotkey_kill() {
+  pid="$1"
+
+  if [ -n "$TEST_KILL_LOG" ]; then
+    printf -- '-9 %s\n' "$pid" >>"$TEST_KILL_LOG"
+  fi
+
+  case "$TEST_MODE" in
+    hotkey_kill)
+      return 0
+      ;;
+    hotkey_kill_fail)
+      return 1
+      ;;
+    hotkey_kill_all)
+      return 0
+      ;;
+    hotkey_kill_all_partial_fail)
+      if [ "$pid" = "4003" ]; then
+        return 1
+      fi
+      return 0
+      ;;
+  esac
+
+  kill -9 "$pid" 2>/dev/null
+}
+
+perform_hotkey_kill() {
+  target=$(select_hotkey_target)
+  if [ -z "$target" ]; then
+    set_status_message "NO TARGET"
+    return
+  fi
+
+  IFS='	' read -r target_pid target_cpu target_command <<EOF
+$target
+EOF
+
+  target_label=$(format_target_label "$target_pid" "$target_command")
+  if execute_hotkey_kill "$target_pid"; then
+    set_status_message "KILLED $target_label ($target_cpu%)"
+  else
+    set_status_message "KILL FAILED $target_label"
+  fi
+}
+
+perform_hotkey_kill_all() {
+  targets=$(select_hotkey_targets)
+  if [ -z "$targets" ]; then
+    set_status_message "NO TARGET"
+    return
+  fi
+
+  total_count=0
+  success_count=0
+  while IFS='	' read -r target_pid target_command; do
+    if [ -z "$target_pid" ]; then
+      continue
+    fi
+    total_count=$((total_count + 1))
+    if execute_hotkey_kill "$target_pid"; then
+      success_count=$((success_count + 1))
+    fi
+  done <<EOF
+$targets
+EOF
+
+  if [ "$success_count" -eq "$total_count" ]; then
+    set_status_message "KILLED ALL $total_count CHILDREN"
+  else
+    set_status_message "KILLED $success_count/$total_count CHILDREN"
+  fi
+}
+
+handle_live_keypress() {
+  key="$1"
+
+  case "$key" in
+    k)
+      perform_hotkey_kill
+      ;;
+    "$CTRL_K_CHAR")
+      perform_hotkey_kill_all
+      ;;
+  esac
+}
+
+process_live_input() {
+  key=$(read_live_keypress)
+  if [ -n "$key" ]; then
+    handle_live_keypress "$key"
+  fi
+}
+
 collect_system_metrics() {
   case "$TEST_MODE" in
-    diff|diff_title|resize|risk_cpu_hot|risk_cpu_crit)
+    diff|diff_title|resize|risk_cpu_hot|risk_cpu_crit|hotkey_kill|hotkey_no_target|hotkey_kill_fail|hotkey_kill_all|hotkey_kill_all_no_target|hotkey_kill_all_partial_fail)
       MEM_TOTAL_KB=4194304
       MEM_FREE_KB=1048576
       MEM_AVAILABLE_KB=2097152
@@ -1012,7 +1379,7 @@ collect_system_metrics() {
 }
 
 collect_agent_rollup() {
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "resize" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "risk_cpu_hot" ] || [ "$TEST_MODE" = "risk_cpu_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
+  if is_fixture_mode; then
     if [ "$LOOP_ITERATION" -le 1 ]; then
       claude_count=1
       claude_rss_kb=131072
@@ -1191,16 +1558,14 @@ collect_agent_rollup() {
 }
 
 collect_task_metrics() {
-  case "$TEST_MODE" in
-    diff|diff_title|resize|risk_warn|risk_hot|risk_crit|risk_cpu_hot|risk_cpu_crit|disk_warn|disk_hot)
+  if is_fixture_mode; then
       TASK_RUNNING_COUNT=2
       TASK_SLEEPING_COUNT=34
       TASK_STOPPED_COUNT=1
       TASK_ZOMBIE_COUNT=1
       TASK_TOTAL_COUNT=38
       return
-      ;;
-  esac
+  fi
 
   eval "$(
     ps -e -o stat= | awk '
@@ -1447,6 +1812,27 @@ render_panel_lines_wrapped() {
   '
 }
 
+render_status_line() {
+  content="$1"
+
+  if [ "$STYLE_ENABLED" -eq 1 ]; then
+    awk -v width="$PANEL_WIDTH" -v content="$content" 'BEGIN {
+      text = content;
+      if (length(text) > width) {
+        if (width > 3) {
+          text = substr(text, 1, width - 3) "...";
+        } else {
+          text = substr(text, 1, width);
+        }
+      }
+      printf "%-" width "s\n", text;
+    }'
+    return
+  fi
+
+  render_panel_line "$content"
+}
+
 render_process_header() {
   header_line=$(printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %-*s %-*s' "PID" "PPID" "RSS_KB" "%MEM" "$PROCESS_MEM_BAR_FIELD_WIDTH" "MEM" "%CPU" "$PROCESS_CPU_BAR_FIELD_WIDTH" "CPU" "ROLE" "$PROCESS_LOCATION_WIDTH" "LOCATION" "$PROCESS_COMMAND_WIDTH" "COMMAND")
   if [ "$STYLE_ENABLED" -eq 1 ]; then
@@ -1459,7 +1845,7 @@ render_process_header() {
 render_process_tree() {
   render_process_header
 
-  if [ "$TEST_MODE" = "diff" ] || [ "$TEST_MODE" = "diff_title" ] || [ "$TEST_MODE" = "resize" ] || [ "$TEST_MODE" = "risk_warn" ] || [ "$TEST_MODE" = "risk_hot" ] || [ "$TEST_MODE" = "risk_crit" ] || [ "$TEST_MODE" = "risk_cpu_hot" ] || [ "$TEST_MODE" = "risk_cpu_crit" ] || [ "$TEST_MODE" = "disk_warn" ] || [ "$TEST_MODE" = "disk_hot" ]; then
+  if is_fixture_mode; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
     sample_location_claude="main@termux-tools"
     sample_location_codex="scratch"
@@ -1470,6 +1856,26 @@ render_process_tree() {
     sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
     sample_bar_low="$(render_bar 12.5 "$CPU_BAR_WIDTH" utilization)"
     sample_bar_mid="$(render_bar 55 "$CPU_BAR_WIDTH" utilization)"
+
+    case "$TEST_MODE" in
+      hotkey_kill|hotkey_kill_fail|hotkey_kill_all|hotkey_kill_all_partial_fail)
+        sample_location_claude="main@termux-tools"
+        sample_location_codex="scratch"
+        sample_location_field_claude=$(render_text_field "$sample_location_claude" "$PROCESS_LOCATION_WIDTH")
+        sample_location_field_codex=$(render_text_field "$sample_location_codex" "$PROCESS_LOCATION_WIDTH")
+        printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %-*s\n' 3001 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 95.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 95.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude CLAUDE 9)" "$sample_location_field_claude" "$PROCESS_COMMAND_WIDTH" "claude"
+        printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %-*s\n' 4002 3001 32768 "$(render_metric_field 0.8 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.8 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 87.5 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 87.5 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude child 9)" "$sample_location_field_empty" "$PROCESS_COMMAND_WIDTH" "|- rustc"
+        printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %-*s\n' 3002 1 98304 "$(render_metric_field 2.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" "$(render_metric_field 55.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" "$(render_role_field codex CODEX 9)" "$sample_location_field_codex" "$PROCESS_COMMAND_WIDTH" "codex"
+        printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %-*s\n' 4003 3002 12288 "$(render_metric_field 0.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.3 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 40.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 40.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field codex child 9)" "$sample_location_field_empty" "$PROCESS_COMMAND_WIDTH" "|- node"
+        return
+        ;;
+      hotkey_no_target|hotkey_kill_all_no_target)
+        printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %-*s\n' 3001 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 95.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 95.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude CLAUDE 9)" "$sample_location_field_claude" "$PROCESS_COMMAND_WIDTH" "claude"
+        printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %-*s\n' 3002 1 98304 "$(render_metric_field 2.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" "$(render_metric_field 55.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" "$(render_role_field codex CODEX 9)" "$sample_location_field_codex" "$PROCESS_COMMAND_WIDTH" "codex"
+        return
+        ;;
+    esac
+
     if agent_root_in_list claude; then
       printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1234 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 12.5 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" "$(render_role_field claude CLAUDE 9)" "$sample_location_field_claude" claude
       printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1456 1234 4096 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 4.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 4.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude child 9)" "$sample_location_field_empty" "|- helper"
@@ -1854,6 +2260,9 @@ EOF
   render_panel_lines_wrapped "AgentsCPU(norm): $(render_bar "$AGENT_CPU_NORM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_NORM_PERCENT" utilization "%")"
   render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_MEM_PERCENT" utilization "%")"
   if [ "$SUMMARY_ONLY" -eq 1 ]; then
+    if [ -n "$STATUS_MESSAGE" ]; then
+      render_status_line "$STATUS_MESSAGE"
+    fi
     if [ "$STYLE_ENABLED" -eq 0 ]; then
       render_plain_header_line
     fi
@@ -1863,6 +2272,9 @@ EOF
     render_plain_header_line
   fi
   render_process_tree
+  if [ -n "$STATUS_MESSAGE" ]; then
+    render_status_line "$STATUS_MESSAGE"
+  fi
   if [ "$STYLE_ENABLED" -eq 0 ]; then
     render_plain_header_line
   fi
@@ -1870,10 +2282,12 @@ EOF
 
 enter_live_screen() {
   LIVE_SCREEN_ACTIVE=1
+  configure_live_input
   printf '\033[?1049h\033[?25l\033[H\033[J'
 }
 
 leave_live_screen() {
+  restore_live_input
   if [ "$LIVE_SCREEN_ACTIVE" -eq 1 ]; then
     printf '\033[?25h\033[?1049l'
     LIVE_SCREEN_ACTIVE=0
@@ -1956,11 +2370,13 @@ run_loop() {
       RESIZE_PENDING=0
     fi
 
+    process_live_input
     current_frame=$(run_once)
     current_frame=$(clip_frame_to_terminal_height "$current_frame")
     printf '\033[H'
     render_frame_diff "$PREVIOUS_FRAME" "$current_frame"
     PREVIOUS_FRAME=$current_frame
+    tick_status_message
 
     if [ "$TEST_CYCLES" -gt 0 ] && [ "$LOOP_ITERATION" -ge "$TEST_CYCLES" ]; then
       break
