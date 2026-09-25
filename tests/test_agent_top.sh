@@ -357,7 +357,7 @@ if ! printf '%s' "$styled_tasks_line" | grep -F "38 total" >/dev/null 2>&1; then
   exit 1
 fi
 
-styled_mem_after_tasks=$(printf '%s\n' "$styled_diff_output" | sed -n '3p')
+styled_mem_after_tasks=$(printf '%s\n' "$styled_diff_output" | sed -n '4p')
 if ! printf '%s' "$styled_mem_after_tasks" | grep -F "Mem:" >/dev/null 2>&1; then
   echo "FAIL: Mem should move below the new Tasks line" >&2
   exit 1
@@ -816,7 +816,7 @@ if ! printf '%s' "$diff_output" | grep -F "%MEM" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! printf '%s' "$diff_output" | grep -F "$(printf '\033[8;1H')" >/dev/null 2>&1; then
+if ! printf '%s' "$diff_output" | grep -F "$(printf '\033[9;1H')" >/dev/null 2>&1; then
   echo "FAIL: diff mode should reposition cursor to the updated agent summary row after the new Mem/Swap layout" >&2
   exit 1
 fi

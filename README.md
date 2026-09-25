@@ -105,3 +105,9 @@ This repository focuses on the gap between those categories: a very small Termux
 ## License
 
 MIT. See `LICENSE`.
+
+## Detection Notes
+
+Agent roles are classified from process identity evidence rather than tree depth. The monitor recognizes the current loader-backed Claude Code and Claude Exomind forms, Codex Exomind, and the Node launcher at `/usr/bin/codex`. A descendant is displayed as `child` unless it independently matches an Agent identity; a command merely containing `codex` does not promote the process.
+
+The resource panel also includes a global CPU line above memory. It is an approximate whole-process CPU percentage normalized by the CPUs available to the monitor, and does not require Termux:API or Android permissions.

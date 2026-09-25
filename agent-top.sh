@@ -12,6 +12,8 @@ PREVIOUS_FRAME=""
 TEST_MODE="${CODEX_TOP_TEST_MODE:-}"
 TEST_CYCLES="${CODEX_TOP_TEST_CYCLES:-0}"
 FORCE_STYLE="${CODEX_TOP_FORCE_STYLE:-0}"
+GLOBAL_CPU_PERCENT=0.0
+TEST_PS_FILE="${CODEX_TOP_TEST_PS_FILE:-}"
 DEFAULT_PANEL_WIDTH=300
 MIN_PANEL_WIDTH=72
 SUMMARY_BAR_WIDTH=20
@@ -195,6 +197,10 @@ is_fixture_mode() {
   return 1
 }
 
+process_snapshot() {
+  if [ -n "$TEST_PS_FILE" ]; then cat "$TEST_PS_FILE"; return; fi
+  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args=
+}
 compact_home_path() {
   text="$1"
   home_prefix="$HOME"
@@ -957,14 +963,21 @@ select_hotkey_target() {
 
   root_list=$(parse_agent_roots "${AGENT_TOP_ROOTS:-}")
 
-  ps -eo pid=,ppid=,pcpu=,comm=,args= | awk -v monitor_pid="$MONITOR_PID" -v root_list="$root_list" '
+  process_snapshot | awk -v monitor_pid="$MONITOR_PID" -v root_list="$root_list" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
       return s;
     }
+    function agent_kind_for(comm_val, args_val) {
+      if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
+      if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
+      if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
+      return "";
+    }
     function is_agent_root(pid) {
-      return root[comm[pid]] == 1;
+      return kind[pid] != "" || root[comm[pid]] == 1;
     }
     function mark_hidden_chain(pid) {
       while (pid != "" && pid != 0 && !is_agent_root(pid) && !hidden[pid]) {
@@ -1026,9 +1039,10 @@ select_hotkey_target() {
       cpu[pid_val] = cpu_val + 0;
       comm[pid_val] = comm_val;
       args[pid_val] = args_val;
+      kind[pid_val] = agent_kind_for(comm_val, args_val);
       children[ppid_val] = children[ppid_val] " " pid_val;
 
-      if (root[comm_val]) {
+      if (kind[pid_val] != "" || root[comm_val]) {
         root_order[++root_pid_count] = pid_val;
       }
     }
@@ -1063,14 +1077,21 @@ select_hotkey_targets() {
 
   root_list=$(parse_agent_roots "${AGENT_TOP_ROOTS:-}")
 
-  ps -eo pid=,ppid=,pcpu=,comm=,args= | awk -v monitor_pid="$MONITOR_PID" -v root_list="$root_list" '
+  process_snapshot | awk -v monitor_pid="$MONITOR_PID" -v root_list="$root_list" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
       return s;
     }
+    function agent_kind_for(comm_val, args_val) {
+      if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
+      if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
+      if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
+      return "";
+    }
     function is_agent_root(pid) {
-      return root[comm[pid]] == 1;
+      return kind[pid] != "" || root[comm[pid]] == 1;
     }
     function mark_hidden_chain(pid) {
       while (pid != "" && pid != 0 && !is_agent_root(pid) && !hidden[pid]) {
@@ -1122,7 +1143,7 @@ select_hotkey_targets() {
       comm[pid_val] = comm_val;
       children[ppid_val] = children[ppid_val] " " pid_val;
 
-      if (root[comm_val]) {
+      if (kind[pid_val] != "" || root[comm_val]) {
         root_order[++root_pid_count] = pid_val;
       }
     }
@@ -1235,6 +1256,10 @@ process_live_input() {
   fi
 }
 
+collect_global_cpu() {
+  if is_fixture_mode; then GLOBAL_CPU_PERCENT=42.0; return; fi
+  GLOBAL_CPU_PERCENT=$(process_snapshot | awk -v cpu_count="$CPU_COUNT" '{ total += $4 } END { if (cpu_count <= 0) cpu_count=1; value=total/cpu_count; if (value<0) value=0; if (value>100) value=100; printf "%.1f", value }')
+}
 collect_system_metrics() {
   case "$TEST_MODE" in
     diff|diff_title|resize|risk_cpu_hot|risk_cpu_crit|hotkey_kill|hotkey_no_target|hotkey_kill_fail|hotkey_kill_all|hotkey_kill_all_no_target|hotkey_kill_all_partial_fail)
@@ -1435,14 +1460,21 @@ collect_agent_rollup() {
   fi
 
   eval "$(
-    ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= | awk -v monitor_pid="$MONITOR_PID" -v mem_total_kb="$MEM_TOTAL_KB" -v root_list="$AGENT_ROOT_LIST" '
+    process_snapshot | awk -v monitor_pid="$MONITOR_PID" -v mem_total_kb="$MEM_TOTAL_KB" -v root_list="$AGENT_ROOT_LIST" '
       function trim(s) {
         sub(/^[[:space:]]+/, "", s);
         sub(/[[:space:]]+$/, "", s);
         return s;
       }
+      function agent_kind_for(comm_val, args_val) {
+        if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
+        if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+        if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
+        if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
+        return "";
+      }
       function is_agent_root(pid) {
-        return root[comm[pid]] == 1;
+        return kind[pid] != "" || root[comm[pid]] == 1;
       }
       BEGIN {
         root_count = split(root_list, root_names, " ");
@@ -1513,9 +1545,10 @@ collect_agent_rollup() {
         cpu[pid_val] = cpu_val + 0;
         comm[pid_val] = comm_val;
         args[pid_val] = args_val;
+        kind[pid_val] = agent_kind_for(comm_val, args_val);
         children[ppid_val] = children[ppid_val] " " pid_val;
 
-        if (root[comm_val]) {
+        if (kind[pid_val] != "" || root[comm_val]) {
           root_order[++root_pid_count] = pid_val;
         }
       }
@@ -1526,8 +1559,8 @@ collect_agent_rollup() {
         for (i = 1; i <= root_pid_count; i++) {
           pid_val = root_order[i];
           if (!hidden[pid_val]) {
-            root_count_map[comm[pid_val]]++;
-            root_rss_map[comm[pid_val]] += rss[pid_val];
+            root_count_map[kind[pid_val] != "" ? kind[pid_val] : comm[pid_val]]++;
+            root_rss_map[kind[pid_val] != "" ? kind[pid_val] : comm[pid_val]] += rss[pid_val];
             agent_cpu += sum_visible_cpu(pid_val);
             agent_rss += sum_visible_rss(pid_val);
           }
@@ -1887,14 +1920,21 @@ render_process_tree() {
     return
   fi
 
-  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args= --sort=-rss | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" '
+  process_snapshot | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
       return s;
     }
+    function agent_kind_for(comm_val, args_val) {
+      if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
+      if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
+      if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
+      return "";
+    }
     function is_agent_root(pid) {
-      return root[comm[pid]] == 1;
+      return kind[pid] != "" || root[comm[pid]] == 1;
     }
     function role_label(root_kind, depth) {
       if (depth == 0) {
@@ -2105,7 +2145,7 @@ render_process_tree() {
       summary = short_args(command_text, command_width);
       mem_percent = safe_percent(rss[pid], mem_total_kb);
       if (depth == 0) {
-        root_kind = comm[pid];
+        root_kind = (kind[pid] != "" ? kind[pid] : comm[pid]);
       }
       location_text = "";
       if (depth == 0) {
@@ -2153,9 +2193,10 @@ render_process_tree() {
       cpu[pid_val] = cpu_val;
       comm[pid_val] = comm_val;
       args[pid_val] = args_val;
+      kind[pid_val] = agent_kind_for(comm_val, args_val);
       children[ppid_val] = children[ppid_val] " " pid_val;
 
-      if (root[comm_val]) {
+      if (kind[pid_val] != "" || root[comm_val]) {
         root_order[++root_pid_count] = pid_val;
       }
     }
@@ -2167,7 +2208,7 @@ render_process_tree() {
         pid_val = root_order[i];
         if (!hidden[pid_val] && !printed[pid_val]) {
           printed[pid_val] = 1;
-          print_node(pid_val, 0, comm[pid_val]);
+          print_node(pid_val, 0, kind[pid_val] != "" ? kind[pid_val] : comm[pid_val]);
         }
       }
     }
@@ -2209,6 +2250,8 @@ render_dashboard() {
   swap_reference_text="$cached_mib MiB cached"
   data_reference_text="$data_used_gib GiB used"
   agent_cpu_cores=$(awk -v percent="$AGENT_CPU_PERCENT" 'BEGIN { printf "%.2f", percent / 100.0 }')
+  global_cpu_cores=$(awk -v percent="$GLOBAL_CPU_PERCENT" 'BEGIN { printf "%.2f", percent / 100.0 }')
+  global_cpu_text="${global_cpu_cores} cores"
   resource_available_width=$(text_width "$mem_available_text")
   current_width=$(text_width "$swap_available_text")
   if [ "$current_width" -gt "$resource_available_width" ]; then
@@ -2252,6 +2295,7 @@ EOF
     render_plain_header_line
   fi
   render_tasks_line "$TASK_TOTAL_COUNT" "$TASK_RUNNING_COUNT" "$TASK_SLEEPING_COUNT" "$TASK_STOPPED_COUNT" "$TASK_ZOMBIE_COUNT"
+  render_resource_line "CPU:" "$GLOBAL_CPU_PERCENT" utilization "$global_cpu_text" "all processes" "$resource_bar_width" "$resource_available_width"
   render_resource_line "Mem:" "$MEM_AVAILABLE_PERCENT" availability "$mem_available_text" "$mem_reference_text" "$resource_bar_width" "$resource_available_width"
   render_resource_line "Swap:" "$SWAP_FREE_PERCENT" availability "$swap_available_text" "$swap_reference_text" "$resource_bar_width" "$resource_available_width"
   render_resource_line "/data:" "$DATA_FREE_PERCENT" disk_availability "$data_available_text" "$data_reference_text" "$resource_bar_width" "$resource_available_width"
@@ -2305,6 +2349,7 @@ run_once() {
   collect_agent_rollup
   collect_task_metrics
   CPU_COUNT=$(detect_cpu_count)
+  collect_global_cpu
   AGENT_CPU_NORM_PERCENT=$(awk -v percent="$AGENT_CPU_PERCENT" -v count="$CPU_COUNT" 'BEGIN {
     if (count <= 0) {
       count = 1;
