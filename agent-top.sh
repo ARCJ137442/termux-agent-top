@@ -42,6 +42,12 @@ TTY_STATE=""
 STATUS_MESSAGE=""
 STATUS_TTL=0
 STATUS_TTL_FRAMES=3
+ARMED_PID=""
+ARMED_CPU=""
+ARMED_COMMAND=""
+ARMED_UNTIL=0
+TREE_FOCUS=0
+EXIT_REQUESTED=0
 TEST_KILL_LOG="${CODEX_TOP_TEST_KILL_LOG:-}"
 CTRL_K_CHAR="$(printf '\013')"
 ANSI_REVERSE="$(printf '\033[7m')"
@@ -872,7 +878,41 @@ clip_frame_to_terminal_height() {
       ;;
   esac
 
-  printf '%s\n' "$frame_text" | awk -v max_rows="$PANEL_HEIGHT" 'NR <= max_rows { print }'
+  printf '%s\n' "$frame_text" | awk -v max_rows="$PANEL_HEIGHT" -v focus="$TREE_FOCUS" -v styled="$STYLE_ENABLED" '
+    { lines[NR]=$0; if ($0 ~ /^PID[[:space:]]+PPID/) header=NR }
+    END {
+      if (!header || NR <= max_rows) {
+        for (i=1; i<=NR && i<=max_rows; i++) print lines[i];
+        exit;
+      }
+      footer=(lines[NR] ~ /^\+/ ? 1 : 0);
+      visible=max_rows-header-footer;
+      if (visible < 1) {
+        for (i=1; i<=max_rows; i++) print lines[i];
+        exit;
+      }
+      total=NR-header-footer;
+      if (focus >= total) focus=total-1;
+      if (focus < 0) focus=0;
+      start=focus-visible+1;
+      if (start < 0) start=0;
+      for (i=1; i<=header; i++) print lines[i];
+      for (i=start; i<total && i<start+visible; i++) {
+        line=lines[header+1+i];
+        if (styled && i == focus) printf "\033[7m%s\033[27m\n", line;
+        else print line;
+      }
+      if (footer) print lines[NR];
+    }'
+}
+
+clamp_tree_focus() {
+  frame_text=$1
+  last_index=$(printf '%s\n' "$frame_text" | awk '
+    /^PID[[:space:]]+PPID/ { header=NR }
+    END { footer=($0 ~ /^\+/ ? 1 : 0); count=NR-header-footer; if (!header || count < 1) count=1; print count-1 }
+  ')
+  if [ "$TREE_FOCUS" -gt "$last_index" ]; then TREE_FOCUS=$last_index; fi
 }
 
 sleep_until_refresh() {
@@ -959,7 +999,13 @@ read_live_keypress() {
     return
   fi
 
-  dd bs=1 count=1 iflag=nonblock if=/dev/tty 2>/dev/null || :
+  key=$(dd bs=1 count=1 iflag=nonblock if=/dev/tty 2>/dev/null || :)
+  if [ "$key" = "$(printf '\033')" ]; then
+    tail=$(dd bs=1 count=2 iflag=nonblock if=/dev/tty 2>/dev/null || :)
+    printf '%s%s' "$key" "$tail"
+  else
+    printf '%s' "$key"
+  fi
 }
 
 format_target_label() {
@@ -1135,7 +1181,7 @@ select_hotkey_targets() {
         return;
       }
 
-      if (depth > 0) {
+      if (depth > 0 && !is_agent_root(pid)) {
         printf "%s\t%s\n", pid, comm[pid];
       }
 
@@ -1213,6 +1259,26 @@ execute_hotkey_kill() {
 }
 
 perform_hotkey_kill() {
+  now=$(date +%s)
+  if [ -n "$ARMED_PID" ] && [ "$now" -le "$ARMED_UNTIL" ]; then
+    armed_pid=$ARMED_PID
+    armed_cpu=$ARMED_CPU
+    armed_command=$ARMED_COMMAND
+    ARMED_PID=""
+    if is_armed_target_eligible "$armed_pid"; then
+      armed_label=$(format_target_label "$armed_pid" "$armed_command")
+      if execute_hotkey_kill "$armed_pid"; then
+        set_status_message "KILLED $armed_label ($armed_cpu%)"
+      else
+        set_status_message "KILL FAILED $armed_label"
+      fi
+      return
+    fi
+    rearming=1
+  else
+    ARMED_PID=""
+    rearming=0
+  fi
   target=$(select_hotkey_target)
   if [ -z "$target" ]; then
     set_status_message "NO TARGET"
@@ -1224,14 +1290,26 @@ $target
 EOF
 
   target_label=$(format_target_label "$target_pid" "$target_command")
-  if execute_hotkey_kill "$target_pid"; then
-    set_status_message "KILLED $target_label ($target_cpu%)"
+  ARMED_PID=$target_pid
+  ARMED_CPU=$target_cpu
+  ARMED_COMMAND=$target_command
+  ARMED_UNTIL=$((now + 5))
+  if [ "$rearming" -eq 1 ]; then
+    set_status_message "REARMED: press k again to kill $target_label ($target_cpu%)"
   else
-    set_status_message "KILL FAILED $target_label"
+    set_status_message "ARMED: press k again to kill $target_label ($target_cpu%)"
   fi
 }
 
+is_armed_target_eligible() {
+  case "$TEST_MODE" in
+    hotkey_kill|hotkey_kill_fail) return 0 ;;
+  esac
+  select_hotkey_targets | awk -F '\t' -v target_pid="$1" -v target_command="$ARMED_COMMAND" '$1 == target_pid && $2 == target_command { found=1 } END { exit !found }'
+}
+
 perform_hotkey_kill_all() {
+  ARMED_PID=""
   targets=$(select_hotkey_targets)
   if [ -z "$targets" ]; then
     set_status_message "NO TARGET"
@@ -1269,6 +1347,13 @@ handle_live_keypress() {
     "$CTRL_K_CHAR")
       perform_hotkey_kill_all
       ;;
+    j|"$(printf '\033[B')") TREE_FOCUS=$((TREE_FOCUS + 1)) ;;
+    u|"$(printf '\033[A')")
+      if [ "$TREE_FOCUS" -gt 0 ]; then TREE_FOCUS=$((TREE_FOCUS - 1)); fi
+      ;;
+    g) TREE_FOCUS=0 ;;
+    G) TREE_FOCUS=999999 ;;
+    q) EXIT_REQUESTED=1 ;;
   esac
 }
 
@@ -2370,6 +2455,8 @@ EOF
   fi
   if [ -n "$STATUS_MESSAGE" ]; then
     render_status_line "$STATUS_MESSAGE"
+  elif [ "$RUN_ONCE" -eq 0 ]; then
+    render_status_line 'j/u: scroll  g/G: top/bottom  k,k: kill-one  Ctrl+K: kill-all  q: quit'
   fi
   if [ "$STYLE_ENABLED" -eq 0 ]; then
     render_plain_header_line
@@ -2477,7 +2564,9 @@ run_loop() {
     fi
 
     process_live_input
+    if [ "$EXIT_REQUESTED" -eq 1 ]; then break; fi
     current_frame=$(run_once)
+    clamp_tree_focus "$current_frame"
     current_frame=$(clip_frame_to_terminal_height "$current_frame")
     printf '\033[H'
     render_frame_diff "$PREVIOUS_FRAME" "$current_frame"

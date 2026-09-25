@@ -56,10 +56,12 @@ Live mode refreshes once per second by default, switches to the terminal's alter
 
 While live mode is running:
 
-- press `k` to immediately `SIGKILL` the highest-CPU non-root child process under the configured agent roots
+- press `j` / `u` (or Down / Up) to move the process-tree focus through all visible agent descendants; `g` / `G` jump to the top / bottom
+- press `k` once to arm the highest-CPU non-root child, then again within five seconds to `SIGKILL` that same eligible process
 - press `Ctrl+K` to `SIGKILL` all non-root child processes under the configured agent roots
+- press `q` to leave the live view
 
-Root `claude`/`codex` processes are never selected by either hotkey.
+The summary stays pinned while the process tree scrolls; tmux rows appear only when they lead to agents, and unrelated tmux branches remain hidden. Root `claude`/`codex` processes are never selected by either kill hotkey. `Ctrl+K` remains immediate; use it deliberately.
 
 Change refresh interval:
 
@@ -99,6 +101,7 @@ This repository focuses on the gap between those categories: a very small Termux
 ## Limitations
 
 - detection is currently focused on `claude` and `codex` root processes
+- on especially short terminals, the summary alone may fill the available rows, leaving no room for the process-tree viewport
 - helper subprocesses may still appear briefly on some shells
 - output is optimized for quick diagnosis, not for machine-readable export
 

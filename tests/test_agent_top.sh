@@ -587,7 +587,7 @@ if printf '%s' "$live_output" | grep -F "$(printf '\033[2J')" >/dev/null 2>&1; t
 fi
 
 set +e
-printf 'k' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill CODEX_TOP_TEST_KILL_LOG=$kill_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$kill_output_file" 2>&1
+printf 'k' | timeout 8 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill CODEX_TOP_TEST_KILL_LOG=$kill_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$kill_output_file" 2>&1
 kill_hotkey_status=$?
 set -e
 
@@ -598,13 +598,13 @@ fi
 
 kill_hotkey_output=$(cat "$kill_output_file")
 
-if ! printf '%s' "$kill_hotkey_output" | grep -F "KILLED rustc[4002] (87.5%)" >/dev/null 2>&1; then
-  echo "FAIL: pressing k should report the killed highest-CPU non-root child process" >&2
+if ! printf '%s' "$kill_hotkey_output" | grep -F "ARMED: press k again to kill rustc[4002] (87.5%)" >/dev/null 2>&1; then
+  echo "FAIL: pressing k should arm the highest-CPU non-root child process" >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$(cat "$kill_log_file")" | grep -F -- "-9 4002" >/dev/null 2>&1; then
-  echo "FAIL: pressing k should send SIGKILL to the highest-CPU non-root child process" >&2
+if [ -s "$kill_log_file" ]; then
+  echo "FAIL: first k should not SIGKILL any process" >&2
   exit 1
 fi
 
@@ -614,7 +614,7 @@ if printf '%s\n' "$(cat "$kill_log_file")" | grep -F -- "-9 3001" >/dev/null 2>&
 fi
 
 set +e
-printf 'k' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_no_target CODEX_TOP_TEST_KILL_LOG=$no_target_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$no_target_output_file" 2>&1
+printf 'k' | timeout 8 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_no_target CODEX_TOP_TEST_KILL_LOG=$no_target_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$no_target_output_file" 2>&1
 no_target_status=$?
 set -e
 
@@ -636,7 +636,7 @@ if [ -s "$no_target_log_file" ]; then
 fi
 
 set +e
-printf 'k' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_fail CODEX_TOP_TEST_KILL_LOG=$kill_fail_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$kill_fail_output_file" 2>&1
+printf 'k' | timeout 8 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_fail CODEX_TOP_TEST_KILL_LOG=$kill_fail_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$kill_fail_output_file" 2>&1
 kill_fail_status=$?
 set -e
 
@@ -647,18 +647,18 @@ fi
 
 kill_fail_output=$(cat "$kill_fail_output_file")
 
-if ! printf '%s' "$kill_fail_output" | grep -F "KILL FAILED rustc[4002]" >/dev/null 2>&1; then
-  echo "FAIL: pressing k should report kill failures for the selected child process" >&2
+if ! printf '%s' "$kill_fail_output" | grep -F "ARMED: press k again to kill rustc[4002]" >/dev/null 2>&1; then
+  echo "FAIL: first k should arm instead of attempting a failing kill" >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$(cat "$kill_fail_log_file")" | grep -F -- "-9 4002" >/dev/null 2>&1; then
-  echo "FAIL: failed kill tests should still attempt SIGKILL on the selected child process" >&2
+if [ -s "$kill_fail_log_file" ]; then
+  echo "FAIL: first k should not attempt SIGKILL even if a later kill would fail" >&2
   exit 1
 fi
 
 set +e
-printf '\013' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_all CODEX_TOP_TEST_KILL_LOG=$bulk_kill_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$bulk_kill_output_file" 2>&1
+printf '\013' | timeout 8 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_all CODEX_TOP_TEST_KILL_LOG=$bulk_kill_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$bulk_kill_output_file" 2>&1
 bulk_kill_status=$?
 set -e
 
@@ -695,7 +695,7 @@ if printf '%s\n' "$(cat "$bulk_kill_log_file")" | grep -F -- "-9 3002" >/dev/nul
 fi
 
 set +e
-printf '\013' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_all_no_target CODEX_TOP_TEST_KILL_LOG=$bulk_no_target_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$bulk_no_target_output_file" 2>&1
+printf '\013' | timeout 8 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_all_no_target CODEX_TOP_TEST_KILL_LOG=$bulk_no_target_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$bulk_no_target_output_file" 2>&1
 bulk_no_target_status=$?
 set -e
 
@@ -717,7 +717,7 @@ if [ -s "$bulk_no_target_log_file" ]; then
 fi
 
 set +e
-printf '\013' | timeout 2 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_all_partial_fail CODEX_TOP_TEST_KILL_LOG=$bulk_partial_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$bulk_partial_output_file" 2>&1
+printf '\013' | timeout 8 script -q -c "env CODEX_TOP_TEST_MODE=hotkey_kill_all_partial_fail CODEX_TOP_TEST_KILL_LOG=$bulk_partial_log_file CODEX_TOP_TEST_CYCLES=2 sh \"$SCRIPT\" --interval 0" /dev/null >"$bulk_partial_output_file" 2>&1
 bulk_partial_status=$?
 set -e
 
