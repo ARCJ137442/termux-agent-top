@@ -14,6 +14,8 @@ TEST_CYCLES="${CODEX_TOP_TEST_CYCLES:-0}"
 FORCE_STYLE="${CODEX_TOP_FORCE_STYLE:-0}"
 GLOBAL_CPU_PERCENT=0.0
 TEST_PS_FILE="${CODEX_TOP_TEST_PS_FILE:-}"
+TEST_PS_LOG="${CODEX_TOP_TEST_PS_LOG:-}"
+FRAME_PROCESS_SNAPSHOT=""
 DEFAULT_PANEL_WIDTH=300
 MIN_PANEL_WIDTH=72
 SUMMARY_BAR_WIDTH=20
@@ -198,9 +200,25 @@ is_fixture_mode() {
 }
 
 process_snapshot() {
-  if [ -n "$TEST_PS_FILE" ]; then cat "$TEST_PS_FILE"; return; fi
-  ps -eo pid=,ppid=,rss=,pcpu=,comm=,args=
+  if [ -n "$TEST_PS_LOG" ]; then
+    printf '%s\n' snapshot >>"$TEST_PS_LOG"
+  fi
+  if [ -n "$TEST_PS_FILE" ]; then
+    awk '{
+      pid = $1; parent = $2; rss = $3; cpu = $4; command = $5
+      $1 = ""; $2 = ""; $3 = ""; $4 = ""; $5 = ""
+      sub(/^[[:space:]]+/, "", $0)
+      print pid, parent, rss, cpu, "S", command, $0
+    }' "$TEST_PS_FILE"
+    return
+  fi
+  ps -eo pid=,ppid=,rss=,pcpu=,stat=,comm=,args=
 }
+
+snapshot_lines() {
+  printf '%s\n' "$FRAME_PROCESS_SNAPSHOT"
+}
+
 compact_home_path() {
   text="$1"
   home_prefix="$HOME"
@@ -971,6 +989,7 @@ select_hotkey_target() {
     }
     function agent_kind_for(comm_val, args_val) {
       if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
       if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
       if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
@@ -1028,10 +1047,10 @@ select_hotkey_target() {
     {
       pid_val = $1;
       ppid_val = $2;
-      cpu_val = $3;
-      comm_val = $4;
+      cpu_val = $4;
+      comm_val = $6;
 
-      $1 = ""; $2 = ""; $3 = ""; $4 = "";
+      $1 = ""; $2 = ""; $3 = ""; $4 = ""; $5 = ""; $6 = "";
       args_val = trim($0);
 
       pid[pid_val] = pid_val;
@@ -1042,7 +1061,7 @@ select_hotkey_target() {
       kind[pid_val] = agent_kind_for(comm_val, args_val);
       children[ppid_val] = children[ppid_val] " " pid_val;
 
-      if (kind[pid_val] != "" || root[comm_val]) {
+      if (kind[pid_val] != "" || root[comm_val] || comm_val == "tmux") {
         root_order[++root_pid_count] = pid_val;
       }
     }
@@ -1085,6 +1104,7 @@ select_hotkey_targets() {
     }
     function agent_kind_for(comm_val, args_val) {
       if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
       if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
       if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
@@ -1136,11 +1156,14 @@ select_hotkey_targets() {
     {
       pid_val = $1;
       ppid_val = $2;
-      comm_val = $4;
+      comm_val = $6;
+      $1 = ""; $2 = ""; $3 = ""; $4 = ""; $5 = ""; $6 = "";
+      args_val = trim($0);
 
       pid[pid_val] = pid_val;
       ppid[pid_val] = ppid_val;
       comm[pid_val] = comm_val;
+      kind[pid_val] = agent_kind_for(comm_val, args_val);
       children[ppid_val] = children[ppid_val] " " pid_val;
 
       if (kind[pid_val] != "" || root[comm_val]) {
@@ -1258,7 +1281,7 @@ process_live_input() {
 
 collect_global_cpu() {
   if is_fixture_mode; then GLOBAL_CPU_PERCENT=42.0; return; fi
-  GLOBAL_CPU_PERCENT=$(process_snapshot | awk -v cpu_count="$CPU_COUNT" '{ total += $4 } END { if (cpu_count <= 0) cpu_count=1; value=total/cpu_count; if (value<0) value=0; if (value>100) value=100; printf "%.1f", value }')
+  GLOBAL_CPU_PERCENT=$(snapshot_lines | awk -v cpu_count="$CPU_COUNT" '{ total += $4 } END { if (cpu_count <= 0) cpu_count=1; value=total/cpu_count; if (value<0) value=0; if (value>100) value=100; printf "%.1f", value }')
 }
 collect_system_metrics() {
   case "$TEST_MODE" in
@@ -1460,7 +1483,7 @@ collect_agent_rollup() {
   fi
 
   eval "$(
-    process_snapshot | awk -v monitor_pid="$MONITOR_PID" -v mem_total_kb="$MEM_TOTAL_KB" -v root_list="$AGENT_ROOT_LIST" '
+    snapshot_lines | awk -v monitor_pid="$MONITOR_PID" -v mem_total_kb="$MEM_TOTAL_KB" -v root_list="$AGENT_ROOT_LIST" '
       function trim(s) {
         sub(/^[[:space:]]+/, "", s);
         sub(/[[:space:]]+$/, "", s);
@@ -1468,6 +1491,7 @@ collect_agent_rollup() {
       }
       function agent_kind_for(comm_val, args_val) {
         if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
         if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
         if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
         if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
@@ -1534,9 +1558,9 @@ collect_agent_rollup() {
         ppid_val = $2;
         rss_val = $3;
         cpu_val = $4;
-        comm_val = $5;
+        comm_val = $6;
 
-        $1 = ""; $2 = ""; $3 = ""; $4 = ""; $5 = "";
+        $1 = ""; $2 = ""; $3 = ""; $4 = ""; $5 = ""; $6 = "";
         args_val = trim($0);
 
         pid[pid_val] = pid_val;
@@ -1601,12 +1625,12 @@ collect_task_metrics() {
   fi
 
   eval "$(
-    ps -e -o stat= | awk '
+    snapshot_lines | awk '
       /^[[:space:]]*$/ {
         next;
       }
       {
-        state = substr($1, 1, 1);
+        state = substr($5, 1, 1);
         total++;
         if (state == "R") {
           running++;
@@ -1920,7 +1944,7 @@ render_process_tree() {
     return
   fi
 
-  process_snapshot | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" '
+  snapshot_lines | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
@@ -1928,6 +1952,7 @@ render_process_tree() {
     }
     function agent_kind_for(comm_val, args_val) {
       if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
       if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
       if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
@@ -1936,7 +1961,21 @@ render_process_tree() {
     function is_agent_root(pid) {
       return kind[pid] != "" || root[comm[pid]] == 1;
     }
-    function role_label(root_kind, depth) {
+    function is_tmux(pid) {
+      return comm[pid] == "tmux" || args[pid] ~ /(^|[[:space:]])tmux([[:space:]]|$)/;
+    }
+    function nearest_tmux(pid, parent) {
+      parent = ppid[pid];
+      while (parent != "" && parent != 0) {
+        if (is_tmux(parent)) return parent;
+        parent = ppid[parent];
+      }
+      return "";
+    }
+    function role_label(root_kind, depth, pid) {
+      if (kind[pid] != "") {
+        return toupper(kind[pid]);
+      }
       if (depth == 0) {
         if (root_kind == "claude") {
           return "CLAUDE";
@@ -2045,8 +2084,8 @@ render_process_tree() {
       plain_text = sprintf("%-*s", width, sprintf("%.1f", percent));
       return style_text(plain_text, bar_color(percent, kind));
     }
-    function render_role_text(root_kind, depth, width, plain_text) {
-      plain_text = sprintf("%-*s", width, role_label(root_kind, depth));
+    function render_role_text(root_kind, depth, width, plain_text, pid) {
+      plain_text = sprintf("%-*s", width, role_label(root_kind, depth, pid));
       return style_text(plain_text, role_color(root_kind));
     }
     function compact_home_path(text,    pos, result) {
@@ -2161,16 +2200,25 @@ render_process_tree() {
         render_metric_text(cpu[pid], "utilization", 6),
         cpu_bar_field_width,
         render_bar(cpu[pid], cpu_bar_width, "utilization"),
-        render_role_text(root_kind, depth, 9),
+        render_role_text(root_kind, depth, 9, "", pid),
         location_width,
         location_text,
         command_width,
         summary;
 
-      n = split(children[pid], child_ids, " ");
-      for (i = 1; i <= n; i++) {
-        child_pid = child_ids[i];
-        if (child_pid != "" && !hidden[child_pid] && !printed[child_pid]) {
+      if (is_tmux(pid)) {
+        for (i = 1; i <= root_pid_count; i++) {
+          child_pid = root_order[i];
+          if (tmux_agent_parent[child_pid] == pid && !printed[child_pid]) {
+            printed[child_pid] = 1;
+            print_node(child_pid, depth + 1, kind[child_pid]);
+          }
+        }
+      } else {
+        n = split(children[pid], child_ids, " ");
+        for (i = 1; i <= n; i++) {
+          child_pid = child_ids[i];
+          if (child_pid == "" || hidden[child_pid] || printed[child_pid]) continue;
           printed[child_pid] = 1;
           print_node(child_pid, depth + 1, root_kind);
         }
@@ -2182,9 +2230,9 @@ render_process_tree() {
       ppid_val = $2;
       rss_val = $3;
       cpu_val = $4;
-      comm_val = $5;
+      comm_val = $6;
 
-      $1 = ""; $2 = ""; $3 = ""; $4 = ""; $5 = "";
+      $1 = ""; $2 = ""; $3 = ""; $4 = ""; $5 = ""; $6 = "";
       args_val = trim($0);
 
       pid[pid_val] = pid_val;
@@ -2196,19 +2244,27 @@ render_process_tree() {
       kind[pid_val] = agent_kind_for(comm_val, args_val);
       children[ppid_val] = children[ppid_val] " " pid_val;
 
-      if (kind[pid_val] != "" || root[comm_val]) {
+      if (kind[pid_val] != "" || root[comm_val] || comm_val == "tmux") {
         root_order[++root_pid_count] = pid_val;
       }
     }
     END {
-      mark_hidden_chain(monitor_pid);
-      mark_hidden_descendants(monitor_pid);
-
       for (i = 1; i <= root_pid_count; i++) {
         pid_val = root_order[i];
-        if (!hidden[pid_val] && !printed[pid_val]) {
+        if (kind[pid_val] == "") continue;
+        tmux_pid = nearest_tmux(pid_val);
+        if (tmux_pid != "") {
+          tmux_agent_parent[pid_val] = tmux_pid;
+          tmux_display[tmux_pid] = 1;
+        }
+      }
+      for (i = 1; i <= root_pid_count; i++) {
+        pid_val = root_order[i];
+        if (kind[pid_val] != "" && tmux_agent_parent[pid_val] != "") continue;
+        if (kind[pid_val] == "" && !tmux_display[pid_val] && !root[comm[pid_val]]) continue;
+        if (!printed[pid_val]) {
           printed[pid_val] = 1;
-          print_node(pid_val, 0, kind[pid_val] != "" ? kind[pid_val] : comm[pid_val]);
+          print_node(pid_val, 0, tmux_display[pid_val] ? "tmux" : (kind[pid_val] != "" ? kind[pid_val] : comm[pid_val]));
         }
       }
     }
@@ -2312,13 +2368,13 @@ EOF
     fi
     return
   fi
+  if [ -n "$STATUS_MESSAGE" ]; then
+    render_status_line "$STATUS_MESSAGE"
+  fi
   if [ "$STYLE_ENABLED" -eq 0 ]; then
     render_plain_header_line
   fi
   render_process_tree
-  if [ -n "$STATUS_MESSAGE" ]; then
-    render_status_line "$STATUS_MESSAGE"
-  fi
   if [ "$STYLE_ENABLED" -eq 0 ]; then
     render_plain_header_line
   fi
@@ -2345,6 +2401,11 @@ handle_live_termination() {
 
 run_once() {
   AGENT_ROOT_LIST=$(parse_agent_roots "${AGENT_TOP_ROOTS:-}")
+  if is_fixture_mode && [ -z "$TEST_PS_FILE" ]; then
+    FRAME_PROCESS_SNAPSHOT=""
+  else
+    FRAME_PROCESS_SNAPSHOT=$(process_snapshot)
+  fi
   collect_system_metrics
   collect_agent_rollup
   collect_task_metrics

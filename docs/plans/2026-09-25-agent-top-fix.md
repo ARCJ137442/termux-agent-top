@@ -38,5 +38,5 @@ Make current Claude Code and Codex processes discoverable by semantic identity r
 - Completed: semantic identity classification and canonical Claude/Codex roles.
 - Completed: global CPU resource line above memory.
 - Completed: deterministic identity regression fixture.
-- Pending: tmux context-root rendering and filtering. It is intentionally not included in this fix release after unsafe intermediate rewrites were discarded.
+- Completed: tmux context-root rendering and filtering with deterministic fixture coverage.
 - Pending: post-release system-wide design discussion using `$super-questioning`.
