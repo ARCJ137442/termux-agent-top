@@ -1,6 +1,6 @@
 # termux-agent-top bug-fix plan
 
-Date: 2026-09-25
+Date: 2026-09-25 (completed 2026-09-26)
 
 ## Goal
 
@@ -39,4 +39,8 @@ Make current Claude Code and Codex processes discoverable by semantic identity r
 - Completed: global CPU resource line above memory.
 - Completed: deterministic identity regression fixture.
 - Completed: tmux context-root rendering and filtering with deterministic fixture coverage.
+- Completed: Claude/Codex type summaries render on separate lines with complete-tree CPU/RSS totals.
+- Completed: CPU/Mem composition bars show Claude, Codex, other, and idle/available segments; the `other` marker uses a filled green-background boundary cell and separate explicit resets, verified at the ANSI-byte boundary to prevent dark fill or reverse-video leakage.
+- Completed: process-table presentation includes two-space child roles, compact Termux paths, one shared dynamic LOCATION width used by every row, narrow-terminal command truncation, and `..` location truncation markers.
+- Completed: full fixture suite, shell syntax checks, `git diff --check`, and benchmark run before publication.
 - Pending: post-release system-wide design discussion using `$super-questioning`.

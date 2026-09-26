@@ -18,8 +18,8 @@ EOF_FIXTURE
 
 output=$(CODEX_TOP_TEST_PS_FILE="$fixture" "$SCRIPT" --once)
 
-printf '%s\n' "$output" | grep -F 'CLAUDE: 1 proc' >/dev/null
-printf '%s\n' "$output" | grep -F 'CODEX: 2 proc' >/dev/null
+printf '%s\n' "$output" | grep -F 'CLAUDE: 1 agents + 1 child = 2 proc' >/dev/null
+printf '%s\n' "$output" | grep -F 'CODEX: 2 agents + 2 child = 4 proc' >/dev/null
 printf '%s\n' "$output" | grep -F 'CLAUDE' >/dev/null
 printf '%s\n' "$output" | grep -F 'CODEX ' >/dev/null
 if printf '%s\n' "$output" | grep -F 'CODEX-EXOMIND' >/dev/null; then

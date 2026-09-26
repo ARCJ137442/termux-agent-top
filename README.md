@@ -4,9 +4,9 @@
 
 The repository is intentionally narrow in scope:
 
-- one lightweight script
-- one smoke test
-- one focused job: show system pressure plus Claude/Codex process trees
+- one lightweight POSIX shell script
+- a focused fixture-based test suite
+- one core job: show system pressure plus Claude/Codex process trees
 
 It is not trying to replace `top`, `htop`, `btop`, or full observability stacks.
 
@@ -26,10 +26,10 @@ This script targets that workflow directly.
 - `MemAvailable`
 - `SwapFree`
 - `/data` usage
-- Agent CPU (raw core-equivalent)
-- Agent CPU normalized to 0-100 based on detected CPU count
-- Claude process count and total RSS
-- Codex process count and total RSS
+- global CPU usage and a CPU composition bar
+- memory availability and a memory composition bar
+- Claude/Codex root and descendant counts, CPU, and RSS summaries
+- combined Agent CPU (raw core-equivalent) and memory totals
 - a parent/child process tree rooted at `claude` and `codex`
 
 ## Usage
@@ -113,4 +113,6 @@ MIT. See `LICENSE`.
 
 Agent roles are classified from process identity evidence rather than tree depth. The monitor recognizes the current loader-backed Claude Code and Claude Exomind forms, Codex Exomind, and the Node launcher at `/usr/bin/codex`. A descendant is displayed as `child` unless it independently matches an Agent identity; a command merely containing `codex` does not promote the process.
 
-The resource panel also includes a global CPU line above memory. It is an approximate whole-process CPU percentage normalized by the CPUs available to the monitor, and does not require Termux:API or Android permissions.
+The CPU and memory rows include proportional Claude, Codex, other, and idle/available segments; the Claude and Codex segments use their theme colors in styled terminals and show a truncated name when space allows. The `other` segment starts with a white `|` on a green background, followed by green fill blocks. The marker and fill have separate explicit ANSI resets, so the boundary remains visible without turning later blocks into dark squares. Agent totals include each root and its full descendant tree, while the per-type summary separates root and child RSS. The separate `AgentsCPU(norm)` line remains normalized against the CPUs available to the monitor. Global CPU is shown as both normalized percent and core-equivalent usage (`used/available cores`); it is an approximate whole-process measurement and does not require Termux:API or Android permissions.
+
+The process table compacts paths under Termux's `files` directory (`/data/data/com.termux/files/usr/bin/node` becomes `~/../usr/bin/node`). Child roles use a fixed two-space indent. One shared `LOCATION` width is sized from the longest detected Git branch plus five characters, allowing shorter branches to use that same available width; long directory suffixes are truncated with `..`, while short values remain whole. The longest non-Git directory name also informs the width, while preserving command space on narrow terminals.

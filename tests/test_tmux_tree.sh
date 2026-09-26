@@ -38,8 +38,8 @@ EOF_FIXTURE
 
 tmux_output=$(CODEX_TOP_TEST_PS_FILE="$tmux_fixture" "$SCRIPT" --once)
 
-printf '%s\n' "$tmux_output" | grep -F 'CLAUDE: 2 proc' >/dev/null
-printf '%s\n' "$tmux_output" | grep -F 'CODEX: 1 proc' >/dev/null
+printf '%s\n' "$tmux_output" | grep -F 'CLAUDE: 2 agents + 4 child = 6 proc' >/dev/null
+printf '%s\n' "$tmux_output" | grep -F 'CODEX: 1 agents + 2 child = 3 proc' >/dev/null
 
 for pattern in \
   '100 ' \
@@ -72,8 +72,8 @@ fi
 
 fallback_output=$(CODEX_TOP_TEST_PS_FILE="$fallback_fixture" "$SCRIPT" --once)
 
-printf '%s\n' "$fallback_output" | grep -F 'CLAUDE: 1 proc' >/dev/null
-printf '%s\n' "$fallback_output" | grep -F 'CODEX: 1 proc' >/dev/null
+printf '%s\n' "$fallback_output" | grep -F 'CLAUDE: 1 agents + 2 child = 3 proc' >/dev/null
+printf '%s\n' "$fallback_output" | grep -F 'CODEX: 1 agents + 2 child = 3 proc' >/dev/null
 
 for pattern in \
   '200 ' \

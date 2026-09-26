@@ -27,10 +27,10 @@ sh -c '
   handle_live_keypress g; test "$TREE_FOCUS" -eq 0
 ' sh "$library" "$top" "$bottom" "$fixture"
 grep -E '^PID[[:space:]]+PPID' "$top" >/dev/null
-grep -F 'CLAUDE: 1 proc' "$top" >/dev/null
+grep -F 'CLAUDE: 1 agents + 24 child = 25 proc' "$top" >/dev/null
 grep -F 'claude-descendant-01' "$top" >/dev/null
 if grep -F 'claude-descendant-24' "$top" >/dev/null; then echo 'FAIL: top focus shows last descendant' >&2; exit 1; fi
 grep -E '^PID[[:space:]]+PPID' "$bottom" >/dev/null
-grep -F 'CLAUDE: 1 proc' "$bottom" >/dev/null
+grep -F 'CLAUDE: 1 agents + 24 child = 25 proc' "$bottom" >/dev/null
 grep -E '^3025[[:space:]]' "$bottom" >/dev/null
 echo 'PASS: live navigation keeps summary/header and reaches descendant tail'

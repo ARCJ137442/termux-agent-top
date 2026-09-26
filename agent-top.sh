@@ -13,9 +13,20 @@ TEST_MODE="${CODEX_TOP_TEST_MODE:-}"
 TEST_CYCLES="${CODEX_TOP_TEST_CYCLES:-0}"
 FORCE_STYLE="${CODEX_TOP_FORCE_STYLE:-0}"
 GLOBAL_CPU_PERCENT=0.0
+GLOBAL_CPU_RAW_PERCENT=0.0
+CLAUDE_CPU_PERCENT=0.0
+CODEX_CPU_PERCENT=0.0
+OTHER_CPU_PERCENT=0.0
+CLAUDE_RSS_KB=0
+CODEX_RSS_KB=0
+AGENT_TOTAL_RSS_KB=0
+AGENT_ROOT_SUMMARY=""
 TEST_PS_FILE="${CODEX_TOP_TEST_PS_FILE:-}"
 TEST_PS_LOG="${CODEX_TOP_TEST_PS_LOG:-}"
+TEST_LOCATION_FILE="${CODEX_TOP_TEST_LOCATION_FILE:-}"
 FRAME_PROCESS_SNAPSHOT=""
+FRAME_LOCATION_MAP=""
+FRAME_LOCATION_WIDTH=7
 DEFAULT_PANEL_WIDTH=300
 MIN_PANEL_WIDTH=72
 SUMMARY_BAR_WIDTH=20
@@ -59,6 +70,8 @@ ANSI_BRIGHT_CLAUDE="$ANSI_BRIGHT_ORANGE"
 ANSI_BRIGHT_CODEX="$(printf '\033[38;2;110;235;255m')"
 ANSI_BRIGHT_RED="$(printf '\033[91m')"
 ANSI_BRIGHT_GREEN="$(printf '\033[92m')"
+ANSI_BRIGHT_WHITE="$(printf '\033[97m')"
+ANSI_BRIGHT_BG_GREEN="$(printf '\033[102m')"
 ANSI_BRIGHT_YELLOW="$(printf '\033[93m')"
 ANSI_GREEN="$(printf '\033[32m')"
 
@@ -176,7 +189,14 @@ configure_layout() {
   esac
 
   PANEL_INNER_WIDTH=$((PANEL_WIDTH - 4))
-  PROCESS_LOCATION_WIDTH=$DEFAULT_PROCESS_LOCATION_WIDTH
+  configure_process_location_layout
+}
+
+configure_process_location_layout() {
+  PROCESS_LOCATION_WIDTH=$FRAME_LOCATION_WIDTH
+  if [ "$PROCESS_LOCATION_WIDTH" -lt 7 ]; then
+    PROCESS_LOCATION_WIDTH=7
+  fi
   PROCESS_FIXED_WIDTH=$((PROCESS_BASE_FIXED_WIDTH + PROCESS_LOCATION_WIDTH + 1))
   PROCESS_COMMAND_WIDTH=$((PANEL_WIDTH - PROCESS_FIXED_WIDTH))
   if [ "$PROCESS_COMMAND_WIDTH" -lt "$MIN_PROCESS_COMMAND_WIDTH" ]; then
@@ -227,22 +247,131 @@ snapshot_lines() {
 
 compact_home_path() {
   text="$1"
-  home_prefix="$HOME"
-  result=""
+  awk -v text="$text" -v home_prefix="$HOME" -v termux_prefix="/data/data/com.termux/files" '
+    function replace_prefix(value, prefix, replacement,    pos, before, after, result) {
+      result = "";
+      while ((pos = index(value, prefix)) > 0) {
+        before = (pos == 1 ? "" : substr(value, pos - 1, 1));
+        after = substr(value, pos + length(prefix), 1);
+        if ((pos == 1 || before ~ /[[:space:]"=]/) && (after == "" || after == "/" || after ~ /[[:space:]]/)) {
+          result = result substr(value, 1, pos - 1) replacement;
+          value = substr(value, pos + length(prefix));
+        } else {
+          result = result substr(value, 1, pos);
+          value = substr(value, pos + 1);
+        }
+      }
+      return result value;
+    }
+    BEGIN {
+      text = replace_prefix(text, home_prefix, "~");
+      text = replace_prefix(text, termux_prefix, "~/..");
+      print text;
+    }
+  '
+}
 
-  while :; do
-    case "$text" in
-      *"$home_prefix"*)
-        prefix=${text%%"$home_prefix"*}
-        result="${result}${prefix}~"
-        text=${text#*"$home_prefix"}
-        ;;
-      *)
-        printf '%s' "${result}${text}"
-        return
-        ;;
-    esac
-  done
+collect_agent_locations() {
+  if [ -n "$TEST_LOCATION_FILE" ] && [ -r "$TEST_LOCATION_FILE" ]; then
+    cat "$TEST_LOCATION_FILE"
+    return
+  fi
+  if [ -n "$TEST_PS_FILE" ]; then
+    return
+  fi
+
+  snapshot_lines | awk -v root_list="$AGENT_ROOT_LIST" '
+    function trim(s) {
+      sub(/^[[:space:]]+/, "", s);
+      sub(/[[:space:]]+$/, "", s);
+      return s;
+    }
+    function agent_kind_for(comm_val, args_val) {
+      if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
+      if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+      if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
+      return "";
+    }
+    function basename_path(path,    value, pos) {
+      value = path;
+      sub(/\/$/, "", value);
+      pos = match(value, /[^\/]+$/);
+      return pos == 0 ? "" : substr(value, RSTART, RLENGTH);
+    }
+    function dq_quote(text,    result, i, ch) {
+      result = "\"";
+      for (i = 1; i <= length(text); i++) {
+        ch = substr(text, i, 1);
+        if (ch == "\\" || ch == "\"" || ch == "$" || ch == "`") result = result "\\" ch;
+        else result = result ch;
+      }
+      return result "\"";
+    }
+    function location_for(pid,    cmd, cwd, folder, branch) {
+      if (pid in location_cache) return location_cache[pid];
+      cmd = "readlink /proc/" pid "/cwd 2>/dev/null";
+      cwd = "";
+      if ((cmd | getline cwd) <= 0) {
+        close(cmd);
+        location_cache[pid] = "";
+        return "";
+      }
+      close(cmd);
+      cwd = trim(cwd);
+      if (cwd == "") {
+        location_cache[pid] = "";
+        return "";
+      }
+      folder = basename_path(cwd);
+      branch = "";
+      cmd = "git -C " dq_quote(cwd) " symbolic-ref --short HEAD 2>/dev/null";
+      if ((cmd | getline branch) > 0) branch = trim(branch);
+      close(cmd);
+      location_cache[pid] = branch != "" ? branch "@" folder : folder;
+      return location_cache[pid];
+    }
+    BEGIN {
+      root_count = split(root_list, root_names, " ");
+      for (i = 1; i <= root_count; i++) root[root_names[i]] = 1;
+    }
+    {
+      pid_val = $1;
+      ppid_val = $2;
+      comm_val = $6;
+      $1 = ""; $2 = ""; $3 = ""; $4 = ""; $5 = ""; $6 = "";
+      args_val = trim($0);
+      ppid[pid_val] = ppid_val;
+      comm[pid_val] = comm_val;
+      kind[pid_val] = agent_kind_for(comm_val, args_val);
+      if (kind[pid_val] != "" || root[comm_val]) roots[++root_count_seen] = pid_val;
+    }
+    END {
+      for (i = 1; i <= root_count_seen; i++) {
+        pid_val = roots[i];
+        location = location_for(pid_val);
+        if (location != "") printf "%s\t%s\n", pid_val, location;
+      }
+    }
+  '
+}
+
+calculate_location_width() {
+  printf '%s\n' "$FRAME_LOCATION_MAP" | awk -F '\t' '
+    BEGIN { width = 7 }
+    NF >= 2 {
+      location = $2;
+      at = index(location, "@");
+      if (at > 0) {
+        branch = substr(location, 1, at - 1);
+        if (length(branch) + 5 > width) width = length(branch) + 5;
+      } else if (length(location) > width) {
+        width = length(location);
+      }
+    }
+    END { print width }
+  '
 }
 
 repeat_char() {
@@ -452,6 +581,9 @@ render_role_field() {
   role_kind="$1"
   role_text="$2"
   width="$3"
+  if [ "$role_text" = "child" ]; then
+    role_text="  child"
+  fi
   padded_text=$(awk -v value="$role_text" -v width="$width" 'BEGIN { printf "%-*s", width, value }')
   color=$(role_color_code "$role_kind")
   render_colored_text "$padded_text" "$color"
@@ -461,6 +593,42 @@ render_text_field() {
   value="$1"
   width="$2"
   awk -v value="$value" -v width="$width" 'BEGIN { printf "%-*s", width, value }'
+}
+
+render_process_command_field() {
+  value="$1"
+  width="$2"
+  awk -v value="$value" -v width="$width" 'BEGIN {
+    if (width < 1) {
+      exit;
+    }
+    if (length(value) > width) {
+      if (width > 3) {
+        value = substr(value, 1, width - 3) "...";
+      } else {
+        value = substr(value, 1, width);
+      }
+    }
+    printf "%-*s", width, value;
+  }'
+}
+
+render_process_location_field() {
+  value="$1"
+  width="$2"
+  awk -v value="$value" -v width="$width" 'BEGIN {
+    if (width < 1) {
+      exit;
+    }
+    if (length(value) > width) {
+      if (width > 3) {
+        value = substr(value, 1, width - 3) "...";
+      } else {
+        value = substr(value, 1, width);
+      }
+    }
+    printf "%-*s", width, value;
+  }'
 }
 
 render_right_text_field() {
@@ -512,6 +680,164 @@ render_resource_line() {
   percent_field=$(render_resource_percent_field "$percent" "$kind" "$RESOURCE_PERCENT_FIELD_WIDTH")
   available_field=$(render_text_field "$available_text" "$available_width")
   render_single_panel_line "$label_field $(render_bar "$percent" "$bar_width" "$kind") $percent_field  $available_field  $reference_text"
+}
+
+render_composition_bar() {
+  bar_width="$1"
+  claude_percent="$2"
+  codex_percent="$3"
+  other_percent="$4"
+  free_percent="$5"
+
+  awk -v bar_width="$bar_width" \
+    -v claude_percent="$claude_percent" \
+    -v codex_percent="$codex_percent" \
+    -v other_percent="$other_percent" \
+    -v free_percent="$free_percent" \
+    -v styled="$STYLE_ENABLED" \
+    -v reverse="$ANSI_REVERSE" \
+    -v ansi_claude="$ANSI_BRIGHT_CLAUDE" \
+    -v ansi_codex="$ANSI_BRIGHT_CODEX" \
+    -v ansi_other="$ANSI_BRIGHT_GREEN" \
+    -v ansi_white="$ANSI_BRIGHT_WHITE" \
+    -v ansi_other_bg="$ANSI_BRIGHT_BG_GREEN" \
+    -v reset="$ANSI_RESET" '
+    function clamp(value) {
+      if (value < 0) return 0;
+      if (value > 100) return 100;
+      return value;
+    }
+    function segment_text(label, width, fill, color, reverse_video,    text, i) {
+      if (width <= 0) return "";
+      if (label == "|") {
+        if (styled == 1 && color != "") {
+          text = ansi_white ansi_other_bg label reset;
+          if (width > 1) {
+            text = text color;
+            for (i = 2; i <= width; i++) text = text fill;
+            text = text reset;
+          }
+          return text;
+        }
+        text = label;
+        for (i = 2; i <= width; i++) text = text fill;
+        return text;
+      }
+      if (label != "") {
+        text = substr(label, 1, width);
+        while (length(text) < width) {
+          if (fill != "") text = text fill;
+          else text = text " ";
+        }
+      } else {
+        text = "";
+        for (i = 1; i <= width; i++) text = text fill;
+      }
+      if (styled == 1 && color != "") {
+        if (reverse_video == 1) return color reverse text reset;
+        return color text reset;
+      }
+      return text;
+    }
+    BEGIN {
+      values[1] = clamp(claude_percent + 0);
+      values[2] = clamp(codex_percent + 0);
+      values[3] = clamp(other_percent + 0);
+      values[4] = clamp(free_percent + 0);
+      total_percent = values[1] + values[2] + values[3] + values[4];
+      if (total_percent <= 0) {
+        values[4] = 100;
+      } else if (total_percent != 100) {
+        for (i = 1; i <= 4; i++) values[i] = values[i] * 100 / total_percent;
+      }
+      labels[1] = "claude";
+      labels[2] = "codex";
+      labels[3] = "|";
+      labels[4] = "";
+      fills[1] = "";
+      fills[2] = "";
+      fills[3] = "█";
+      fills[4] = "░";
+      colors[1] = ansi_claude;
+      colors[2] = ansi_codex;
+      colors[3] = ansi_other;
+      colors[4] = "";
+      reverse_video[1] = 1;
+      reverse_video[2] = 1;
+      reverse_video[3] = 0;
+      reverse_video[4] = 0;
+
+      total = 0;
+      assigned = 0;
+      for (i = 1; i <= 4; i++) {
+        raw = values[i] * bar_width / 100.0;
+        widths[i] = int(raw);
+        remainders[i] = raw - widths[i];
+        total += values[i];
+        assigned += widths[i];
+      }
+
+      while (assigned < bar_width) {
+        best = 1;
+        for (i = 2; i <= 4; i++) {
+          if (remainders[i] > remainders[best]) best = i;
+        }
+        widths[best]++;
+        remainders[best] = -1;
+        assigned++;
+      }
+
+      for (i = 1; i <= 2; i++) {
+        if (values[i] > 0 && widths[i] == 0 && bar_width >= 2) {
+          widths[i] = 1;
+          assigned++;
+        }
+      }
+
+      while (assigned > bar_width) {
+        best = 0;
+        for (i = 4; i >= 1; i--) {
+          minimum = (i <= 2 && values[i] > 0 && bar_width >= 2) ? 1 : 0;
+          if (widths[i] > minimum && (best == 0 || values[i] < values[best])) best = i;
+        }
+        if (best == 0) break;
+        widths[best]--;
+        assigned--;
+      }
+
+      while (assigned < bar_width) {
+        best = 4;
+        for (i = 3; i >= 1; i--) {
+          if (values[i] > values[best]) best = i;
+        }
+        widths[best]++;
+        assigned++;
+      }
+
+      result = "";
+      for (i = 1; i <= 4; i++) result = result segment_text(labels[i], widths[i], fills[i], colors[i], reverse_video[i]);
+      print result;
+    }
+  '
+}
+
+render_composition_line() {
+  label="$1"
+  metric_percent="$2"
+  metric_kind="$3"
+  available_text="$4"
+  reference_text="$5"
+  bar_width="$6"
+  available_width="$7"
+  claude_percent="$8"
+  codex_percent="$9"
+  other_percent="${10}"
+  free_percent="${11}"
+  label_field=$(render_text_field "$label" "$RESOURCE_LABEL_WIDTH")
+  percent_field=$(render_resource_percent_field "$metric_percent" "$metric_kind" "$RESOURCE_PERCENT_FIELD_WIDTH")
+  available_field=$(render_text_field "$available_text" "$available_width")
+  composition_bar=$(render_composition_bar "$bar_width" "$claude_percent" "$codex_percent" "$other_percent" "$free_percent")
+  render_single_panel_line "$label_field $composition_bar $percent_field  $available_field  $reference_text"
 }
 
 render_tasks_line() {
@@ -1038,7 +1364,7 @@ select_hotkey_target() {
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
       if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
-      if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
+      if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       return "";
     }
     function is_agent_root(pid) {
@@ -1153,7 +1479,7 @@ select_hotkey_targets() {
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
       if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
-      if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
+      if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       return "";
     }
     function is_agent_root(pid) {
@@ -1365,8 +1691,19 @@ process_live_input() {
 }
 
 collect_global_cpu() {
-  if is_fixture_mode; then GLOBAL_CPU_PERCENT=42.0; return; fi
-  GLOBAL_CPU_PERCENT=$(snapshot_lines | awk -v cpu_count="$CPU_COUNT" '{ total += $4 } END { if (cpu_count <= 0) cpu_count=1; value=total/cpu_count; if (value<0) value=0; if (value>100) value=100; printf "%.1f", value }')
+  if is_fixture_mode && [ -z "$TEST_PS_FILE" ]; then
+    GLOBAL_CPU_RAW_PERCENT=84.0
+    GLOBAL_CPU_PERCENT=42.0
+    return
+  fi
+  GLOBAL_CPU_RAW_PERCENT=$(snapshot_lines | awk '{ total += $4 } END { if (total < 0) total=0; printf "%.1f", total }')
+  GLOBAL_CPU_PERCENT=$(awk -v raw="$GLOBAL_CPU_RAW_PERCENT" -v cpu_count="$CPU_COUNT" 'BEGIN {
+    if (cpu_count <= 0) cpu_count = 1;
+    value = raw / cpu_count;
+    if (value < 0) value = 0;
+    if (value > 100) value = 100;
+    printf "%.1f", value;
+  }')
 }
 collect_system_metrics() {
   case "$TEST_MODE" in
@@ -1512,58 +1849,81 @@ collect_system_metrics() {
 }
 
 collect_agent_rollup() {
-  if is_fixture_mode; then
+  if is_fixture_mode && [ -z "$TEST_PS_FILE" ]; then
     if [ "$LOOP_ITERATION" -le 1 ]; then
-      claude_count=1
-      claude_rss_kb=131072
-      case "$TEST_MODE" in
-        risk_cpu_hot)
-          AGENT_CPU_PERCENT=150.0
-          ;;
-        risk_cpu_crit)
-          AGENT_CPU_PERCENT=250.0
-          ;;
-        *)
-          AGENT_CPU_PERCENT=55.0
-          ;;
-      esac
-      AGENT_MEM_PERCENT=7.8
+      claude_root_count=1
+      claude_root_rss_kb=131072
+      claude_child_count=1
+      claude_child_rss_kb=4096
+      codex_root_count=1
+      codex_root_rss_kb=196608
+      codex_child_count=1
+      codex_child_rss_kb=5120
     else
-      claude_count=2
-      claude_rss_kb=262144
-      case "$TEST_MODE" in
-        risk_cpu_hot)
-          AGENT_CPU_PERCENT=150.0
-          ;;
-        risk_cpu_crit)
-          AGENT_CPU_PERCENT=250.0
-          ;;
-        *)
-          AGENT_CPU_PERCENT=65.0
-          ;;
-      esac
-      AGENT_MEM_PERCENT=10.9
+      claude_root_count=2
+      claude_root_rss_kb=262144
+      claude_child_count=1
+      claude_child_rss_kb=4096
+      codex_root_count=1
+      codex_root_rss_kb=196608
+      codex_child_count=1
+      codex_child_rss_kb=5120
     fi
-    codex_count=1
-    codex_rss_kb=196608
     AGENT_ROOT_SUMMARY=""
+    AGENT_CPU_PERCENT=0.0
+    AGENT_TOTAL_RSS_KB=0
+    CLAUDE_ROOT_COUNT=0
+    CLAUDE_CHILD_COUNT=0
+    CLAUDE_ROOT_RSS_KB=0
+    CLAUDE_CHILD_RSS_KB=0
+    CLAUDE_CPU_PERCENT=0.0
+    CLAUDE_RSS_KB=0
+    CODEX_ROOT_COUNT=0
+    CODEX_CHILD_COUNT=0
+    CODEX_ROOT_RSS_KB=0
+    CODEX_CHILD_RSS_KB=0
+    CODEX_CPU_PERCENT=0.0
+    CODEX_RSS_KB=0
     for root in $AGENT_ROOT_LIST; do
       case "$root" in
         claude)
-          root_count=$claude_count
-          root_rss_kb=$claude_rss_kb
+          CLAUDE_ROOT_COUNT=$claude_root_count
+          CLAUDE_CHILD_COUNT=$claude_child_count
+          CLAUDE_ROOT_RSS_KB=$claude_root_rss_kb
+          CLAUDE_CHILD_RSS_KB=$claude_child_rss_kb
+          CLAUDE_CPU_PERCENT=55.0
+          CLAUDE_RSS_KB=$((claude_root_rss_kb + claude_child_rss_kb))
+          AGENT_CPU_PERCENT=$(awk -v cpu="$AGENT_CPU_PERCENT" -v claude="$CLAUDE_CPU_PERCENT" 'BEGIN { printf "%.1f", cpu + claude }')
+          AGENT_TOTAL_RSS_KB=$((AGENT_TOTAL_RSS_KB + CLAUDE_RSS_KB))
+          AGENT_ROOT_SUMMARY="${AGENT_ROOT_SUMMARY}${AGENT_ROOT_SUMMARY:+ }claude:${CLAUDE_ROOT_COUNT}:${CLAUDE_CHILD_COUNT}:${CLAUDE_ROOT_RSS_KB}:${CLAUDE_CHILD_RSS_KB}:${CLAUDE_CPU_PERCENT}"
           ;;
         codex)
-          root_count=$codex_count
-          root_rss_kb=$codex_rss_kb
-          ;;
-        *)
-          root_count=0
-          root_rss_kb=0
+          CODEX_ROOT_COUNT=$codex_root_count
+          CODEX_CHILD_COUNT=$codex_child_count
+          CODEX_ROOT_RSS_KB=$codex_root_rss_kb
+          CODEX_CHILD_RSS_KB=$codex_child_rss_kb
+          CODEX_CPU_PERCENT=0.0
+          CODEX_RSS_KB=$((codex_root_rss_kb + codex_child_rss_kb))
+          AGENT_TOTAL_RSS_KB=$((AGENT_TOTAL_RSS_KB + CODEX_RSS_KB))
+          AGENT_ROOT_SUMMARY="${AGENT_ROOT_SUMMARY}${AGENT_ROOT_SUMMARY:+ }codex:${CODEX_ROOT_COUNT}:${CODEX_CHILD_COUNT}:${CODEX_ROOT_RSS_KB}:${CODEX_CHILD_RSS_KB}:${CODEX_CPU_PERCENT}"
           ;;
       esac
-      AGENT_ROOT_SUMMARY="${AGENT_ROOT_SUMMARY}${AGENT_ROOT_SUMMARY:+ }${root}:${root_count}:${root_rss_kb}"
     done
+    case "$TEST_MODE" in
+      risk_cpu_hot)
+        if agent_root_in_list claude; then
+          AGENT_CPU_PERCENT=150.0
+          CLAUDE_CPU_PERCENT=150.0
+        fi
+        ;;
+      risk_cpu_crit)
+        if agent_root_in_list claude; then
+          AGENT_CPU_PERCENT=250.0
+          CLAUDE_CPU_PERCENT=250.0
+        fi
+        ;;
+    esac
+    AGENT_MEM_PERCENT=$(safe_percent "$AGENT_TOTAL_RSS_KB" "$MEM_TOTAL_KB")
     return
   fi
 
@@ -1576,20 +1936,14 @@ collect_agent_rollup() {
       }
       function agent_kind_for(comm_val, args_val) {
         if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
-      if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
-        if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+        if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
         if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
-        if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
+        if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+        if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
         return "";
       }
       function is_agent_root(pid) {
         return kind[pid] != "" || root[comm[pid]] == 1;
-      }
-      BEGIN {
-        root_count = split(root_list, root_names, " ");
-        for (i = 1; i <= root_count; i++) {
-          root[root_names[i]] = 1;
-        }
       }
       function mark_hidden_chain(pid) {
         while (pid != "" && pid != 0 && !is_agent_root(pid) && !hidden[pid]) {
@@ -1599,7 +1953,6 @@ collect_agent_rollup() {
       }
       function mark_hidden_descendants(pid, child_ids, n, i, child_pid) {
         hidden[pid] = 1;
-
         n = split(children[pid], child_ids, " ");
         for (i = 1; i <= n; i++) {
           child_pid = child_ids[i];
@@ -1608,35 +1961,43 @@ collect_agent_rollup() {
           }
         }
       }
-      function sum_visible_cpu(pid, child_ids, n, i, child_pid, total) {
-        if (hidden[pid]) {
-          return 0;
+      function add_type_name(name) {
+        if (name != "" && !type_seen[name]++) {
+          type_order[++type_count] = name;
         }
-
-        total = cpu[pid];
-        n = split(children[pid], child_ids, " ");
-        for (i = 1; i <= n; i++) {
-          child_pid = child_ids[i];
-          if (child_pid != "") {
-            total += sum_visible_cpu(child_pid);
-          }
-        }
-        return total;
       }
-      function sum_visible_rss(pid, child_ids, n, i, child_pid, total) {
-        if (hidden[pid]) {
-          return 0;
-        }
+      function collect_tree(pid, type_name, is_root, child_ids, n, i, child_pid) {
+        if (hidden[pid]) return;
+        if (!is_root && is_agent_root(pid)) return;
 
-        total = rss[pid];
+        if (is_root) {
+          root_count_map[type_name]++;
+          root_rss_map[type_name] += rss[pid];
+        } else {
+          child_count_map[type_name]++;
+          child_rss_map[type_name] += rss[pid];
+        }
+        type_cpu_map[type_name] += cpu[pid];
+        type_rss_map[type_name] += rss[pid];
+        agent_cpu += cpu[pid];
+        agent_rss += rss[pid];
+
         n = split(children[pid], child_ids, " ");
         for (i = 1; i <= n; i++) {
           child_pid = child_ids[i];
           if (child_pid != "") {
-            total += sum_visible_rss(child_pid);
+            collect_tree(child_pid, type_name, 0);
           }
         }
-        return total;
+      }
+      BEGIN {
+        root_count = split(root_list, root_names, " ");
+        for (i = 1; i <= root_count; i++) {
+          root[root_names[i]] = 1;
+          add_type_name(root_names[i]);
+        }
+        add_type_name("claude");
+        add_type_name("codex");
       }
       {
         pid_val = $1;
@@ -1657,8 +2018,10 @@ collect_agent_rollup() {
         kind[pid_val] = agent_kind_for(comm_val, args_val);
         children[ppid_val] = children[ppid_val] " " pid_val;
 
-        if (kind[pid_val] != "" || root[comm_val]) {
+        if (is_agent_root(pid_val)) {
           root_order[++root_pid_count] = pid_val;
+          root_kind[pid_val] = (kind[pid_val] != "" ? kind[pid_val] : comm_val);
+          add_type_name(root_kind[pid_val]);
         }
       }
       END {
@@ -1668,27 +2031,32 @@ collect_agent_rollup() {
         for (i = 1; i <= root_pid_count; i++) {
           pid_val = root_order[i];
           if (!hidden[pid_val]) {
-            root_count_map[kind[pid_val] != "" ? kind[pid_val] : comm[pid_val]]++;
-            root_rss_map[kind[pid_val] != "" ? kind[pid_val] : comm[pid_val]] += rss[pid_val];
-            agent_cpu += sum_visible_cpu(pid_val);
-            agent_rss += sum_visible_rss(pid_val);
+            collect_tree(pid_val, root_kind[pid_val], 1);
           }
         }
 
         summary = "";
-        for (i = 1; i <= root_count; i++) {
-          name = root_names[i];
-          count = root_count_map[name] + 0;
-          rss_total = root_rss_map[name] + 0;
-          if (summary != "") {
-            summary = summary " ";
-          }
-          summary = summary name ":" count ":" rss_total;
+        for (i = 1; i <= type_count; i++) {
+          name = type_order[i];
+          if (root_count_map[name] + child_count_map[name] <= 0) continue;
+          if (summary != "") summary = summary " ";
+          summary = summary name ":" (root_count_map[name] + 0) ":" (child_count_map[name] + 0) ":" (root_rss_map[name] + 0) ":" (child_rss_map[name] + 0) ":" sprintf("%.1f", type_cpu_map[name] + 0);
         }
         escaped = summary;
         gsub(/["\\]/, "\\\\&", escaped);
         printf "AGENT_ROOT_SUMMARY=\"%s\"\n", escaped;
         printf "AGENT_CPU_PERCENT=%.1f\n", agent_cpu;
+        printf "AGENT_TOTAL_RSS_KB=%.0f\n", agent_rss;
+        printf "CLAUDE_ROOT_COUNT=%d\n", root_count_map["claude"] + 0;
+        printf "CLAUDE_CHILD_COUNT=%d\n", child_count_map["claude"] + 0;
+        printf "CLAUDE_ROOT_RSS_KB=%.0f\n", root_rss_map["claude"] + 0;
+        printf "CLAUDE_CHILD_RSS_KB=%.0f\n", child_rss_map["claude"] + 0;
+        printf "CLAUDE_CPU_PERCENT=%.1f\n", type_cpu_map["claude"] + 0;
+        printf "CODEX_ROOT_COUNT=%d\n", root_count_map["codex"] + 0;
+        printf "CODEX_CHILD_COUNT=%d\n", child_count_map["codex"] + 0;
+        printf "CODEX_ROOT_RSS_KB=%.0f\n", root_rss_map["codex"] + 0;
+        printf "CODEX_CHILD_RSS_KB=%.0f\n", child_rss_map["codex"] + 0;
+        printf "CODEX_CPU_PERCENT=%.1f\n", type_cpu_map["codex"] + 0;
         if (mem_total_kb > 0) {
           printf "AGENT_MEM_PERCENT=%.1f\n", (agent_rss / mem_total_kb) * 100.0;
         } else {
@@ -1697,10 +2065,12 @@ collect_agent_rollup() {
       }
     '
   )"
+  CLAUDE_RSS_KB=$((CLAUDE_ROOT_RSS_KB + CLAUDE_CHILD_RSS_KB))
+  CODEX_RSS_KB=$((CODEX_ROOT_RSS_KB + CODEX_CHILD_RSS_KB))
 }
 
 collect_task_metrics() {
-  if is_fixture_mode; then
+  if is_fixture_mode && [ -z "$TEST_PS_FILE" ]; then
       TASK_RUNNING_COUNT=2
       TASK_SLEEPING_COUNT=34
       TASK_STOPPED_COUNT=1
@@ -1976,7 +2346,11 @@ render_status_line() {
 }
 
 render_process_header() {
-  header_line=$(printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %-*s %-*s' "PID" "PPID" "RSS_KB" "%MEM" "$PROCESS_MEM_BAR_FIELD_WIDTH" "MEM" "%CPU" "$PROCESS_CPU_BAR_FIELD_WIDTH" "CPU" "ROLE" "$PROCESS_LOCATION_WIDTH" "LOCATION" "$PROCESS_COMMAND_WIDTH" "COMMAND")
+  location_heading="LOCATION"
+  if [ "$PROCESS_LOCATION_WIDTH" -lt 8 ]; then
+    location_heading="LOC"
+  fi
+  header_line=$(printf '%-6s %-6s %-7s %-6s %-*s %-6s %-*s %-9s %-*s %-*s' "PID" "PPID" "RSS_KB" "%MEM" "$PROCESS_MEM_BAR_FIELD_WIDTH" "MEM" "%CPU" "$PROCESS_CPU_BAR_FIELD_WIDTH" "CPU" "ROLE" "$PROCESS_LOCATION_WIDTH" "$location_heading" "$PROCESS_COMMAND_WIDTH" "COMMAND")
   if [ "$STYLE_ENABLED" -eq 1 ]; then
     render_reverse_text_line "$header_line"
   else
@@ -1987,12 +2361,12 @@ render_process_header() {
 render_process_tree() {
   render_process_header
 
-  if is_fixture_mode; then
+  if is_fixture_mode && [ -z "$TEST_PS_FILE" ]; then
     sample_path=$(compact_home_path "/data/data/com.termux/files/home/A137442/example/project/index.ts")
     sample_location_claude="main@termux-tools"
     sample_location_codex="scratch"
-    sample_location_field_claude=$(render_text_field "$sample_location_claude" "$PROCESS_LOCATION_WIDTH")
-    sample_location_field_codex=$(render_text_field "$sample_location_codex" "$PROCESS_LOCATION_WIDTH")
+    sample_location_field_claude=$(render_process_location_field "$sample_location_claude" "$PROCESS_LOCATION_WIDTH")
+    sample_location_field_codex=$(render_process_location_field "$sample_location_codex" "$PROCESS_LOCATION_WIDTH")
     sample_location_field_empty=$(render_text_field "" "$PROCESS_LOCATION_WIDTH")
     sample_mem_bar_low="$(render_bar 1.6 "$MEM_BAR_WIDTH" utilization)"
     sample_mem_bar_mid="$(render_bar 2.3 "$MEM_BAR_WIDTH" utilization)"
@@ -2003,8 +2377,8 @@ render_process_tree() {
       hotkey_kill|hotkey_kill_fail|hotkey_kill_all|hotkey_kill_all_partial_fail)
         sample_location_claude="main@termux-tools"
         sample_location_codex="scratch"
-        sample_location_field_claude=$(render_text_field "$sample_location_claude" "$PROCESS_LOCATION_WIDTH")
-        sample_location_field_codex=$(render_text_field "$sample_location_codex" "$PROCESS_LOCATION_WIDTH")
+        sample_location_field_claude=$(render_process_location_field "$sample_location_claude" "$PROCESS_LOCATION_WIDTH")
+        sample_location_field_codex=$(render_process_location_field "$sample_location_codex" "$PROCESS_LOCATION_WIDTH")
         printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %-*s\n' 3001 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 95.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 95.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude CLAUDE 9)" "$sample_location_field_claude" "$PROCESS_COMMAND_WIDTH" "claude"
         printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %-*s\n' 4002 3001 32768 "$(render_metric_field 0.8 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.8 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 87.5 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 87.5 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude child 9)" "$sample_location_field_empty" "$PROCESS_COMMAND_WIDTH" "|- rustc"
         printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %-*s\n' 3002 1 98304 "$(render_metric_field 2.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" "$(render_metric_field 55.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" "$(render_role_field codex CODEX 9)" "$sample_location_field_codex" "$PROCESS_COMMAND_WIDTH" "codex"
@@ -2019,17 +2393,17 @@ render_process_tree() {
     esac
 
     if agent_root_in_list claude; then
-      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1234 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 12.5 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" "$(render_role_field claude CLAUDE 9)" "$sample_location_field_claude" claude
-      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1456 1234 4096 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 4.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 4.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude child 9)" "$sample_location_field_empty" "|- helper"
+      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1234 1 65536 "$(render_metric_field 1.6 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_low" "$(render_metric_field 12.5 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_low" "$(render_role_field claude CLAUDE 9)" "$sample_location_field_claude" "$(render_process_command_field claude "$PROCESS_COMMAND_WIDTH")"
+      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 1456 1234 4096 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 4.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 4.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field claude child 9)" "$sample_location_field_empty" "$(render_process_command_field '|- helper' "$PROCESS_COMMAND_WIDTH")"
     fi
     if agent_root_in_list codex; then
-      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 2345 1 98304 "$(render_metric_field 2.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" "$(render_metric_field 55.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" "$(render_role_field codex CODEX 9)" "$sample_location_field_codex" "node $sample_path"
-      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 2456 2345 5120 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 8.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 8.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field codex child 9)" "$sample_location_field_empty" "|- worker"
+      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 2345 1 98304 "$(render_metric_field 2.3 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$sample_mem_bar_mid" "$(render_metric_field 55.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$sample_bar_mid" "$(render_role_field codex CODEX 9)" "$sample_location_field_codex" "$(render_process_command_field "node $sample_path" "$PROCESS_COMMAND_WIDTH")"
+      printf '%-6s %-6s %-7s %s %-*s %s %-*s %s %s %s\n' 2456 2345 5120 "$(render_metric_field 0.1 utilization 6)" "$PROCESS_MEM_BAR_FIELD_WIDTH" "$(render_bar 0.1 "$MEM_BAR_WIDTH" utilization)" "$(render_metric_field 8.0 utilization 6)" "$PROCESS_CPU_BAR_FIELD_WIDTH" "$(render_bar 8.0 "$CPU_BAR_WIDTH" utilization)" "$(render_role_field codex child 9)" "$sample_location_field_empty" "$(render_process_command_field '|- worker' "$PROCESS_COMMAND_WIDTH")"
     fi
     return
   fi
 
-  snapshot_lines | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" '
+  snapshot_lines | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v termux_prefix="/data/data/com.termux/files" -v location_map="$FRAME_LOCATION_MAP" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
@@ -2040,7 +2414,7 @@ render_process_tree() {
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
       if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
-      if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])node([[:space:]]|$)/ && args_val ~ /\/usr\/bin\/codex([[:space:]]|$)/) return "codex";
+      if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       return "";
     }
     function is_agent_root(pid) {
@@ -2070,7 +2444,7 @@ render_process_tree() {
         }
         return toupper(root_kind);
       }
-      return "child";
+      return "  child";
     }
     function short_args(text, max_len) {
       if (max_len < 1) {
@@ -2083,6 +2457,22 @@ render_process_tree() {
         return substr(text, 1, max_len);
       }
       return substr(text, 1, max_len - 3) "...";
+    }
+    function short_location(text, max_len, at_pos, folder_chars) {
+      if (max_len < 1) return "";
+      if (length(text) <= max_len) return text;
+      at_pos = index(text, "@");
+      if (at_pos > 0) {
+        folder_chars = max_len - at_pos - 2;
+        if (folder_chars > 0) {
+          return substr(text, 1, at_pos + folder_chars) "..";
+        }
+        if (max_len >= at_pos + 2) {
+          return substr(text, 1, at_pos) "..";
+        }
+      }
+      if (max_len <= 2) return substr("..", 1, max_len);
+      return substr(text, 1, max_len - 2) "..";
     }
     function safe_percent(numerator, denominator) {
       if (denominator <= 0) {
@@ -2173,18 +2563,37 @@ render_process_tree() {
       plain_text = sprintf("%-*s", width, role_label(root_kind, depth, pid));
       return style_text(plain_text, role_color(root_kind));
     }
-    function compact_home_path(text,    pos, result) {
+    function compact_path_prefix(text, prefix, replacement,    pos, before, after, result) {
       result = "";
-      while ((pos = index(text, home_prefix)) > 0) {
-        result = result substr(text, 1, pos - 1) "~";
-        text = substr(text, pos + length(home_prefix));
+      while ((pos = index(text, prefix)) > 0) {
+        before = (pos == 1 ? "" : substr(text, pos - 1, 1));
+        after = substr(text, pos + length(prefix), 1);
+        if ((pos == 1 || before ~ /[[:space:]"=]/) && (after == "" || after == "/" || after ~ /[[:space:]]/)) {
+          result = result substr(text, 1, pos - 1) replacement;
+          text = substr(text, pos + length(prefix));
+        } else {
+          result = result substr(text, 1, pos);
+          text = substr(text, pos + 1);
+        }
       }
       return result text;
+    }
+    function compact_home_path(text) {
+      text = compact_path_prefix(text, home_prefix, "~");
+      return compact_path_prefix(text, termux_prefix, "~/..");
     }
     BEGIN {
       root_name_count = split(root_list, root_names, " ");
       for (i = 1; i <= root_name_count; i++) {
         root[root_names[i]] = 1;
+      }
+      location_count = split(location_map, location_records, "\n");
+      for (i = 1; i <= location_count; i++) {
+        separator = index(location_records[i], "\t");
+        if (separator > 0) {
+          location_pid = substr(location_records[i], 1, separator - 1);
+          location_cache[location_pid] = substr(location_records[i], separator + 1);
+        }
       }
     }
     function dq_quote(text,    result, i, ch) {
@@ -2208,36 +2617,7 @@ render_process_tree() {
       }
       return substr(path, RSTART, RLENGTH);
     }
-    function get_location(pid,    cmd, cwd, folder, branch) {
-      if (pid in location_cache) {
-        return location_cache[pid];
-      }
-      cmd = "readlink /proc/" pid "/cwd 2>/dev/null";
-      cwd = "";
-      if ((cmd | getline cwd) <= 0) {
-        close(cmd);
-        location_cache[pid] = "";
-        return "";
-      }
-      close(cmd);
-      if (cwd == "") {
-        location_cache[pid] = "";
-        return "";
-      }
-      folder = basename_path(cwd);
-      branch = "";
-      cmd = "git -C " dq_quote(cwd) " symbolic-ref --short HEAD 2>/dev/null";
-      if ((cmd | getline branch) > 0) {
-        close(cmd);
-        branch = trim(branch);
-      } else {
-        close(cmd);
-      }
-      if (branch != "") {
-        location_cache[pid] = branch "@" folder;
-      } else {
-        location_cache[pid] = folder;
-      }
+    function get_location(pid) {
       return location_cache[pid];
     }
     function mark_hidden_chain(pid) {
@@ -2272,8 +2652,8 @@ render_process_tree() {
         root_kind = (kind[pid] != "" ? kind[pid] : comm[pid]);
       }
       location_text = "";
-      if (depth == 0) {
-        location_text = short_args(get_location(pid), location_width);
+      if (depth == 0 || kind[pid] != "") {
+        location_text = short_location(get_location(pid), location_width);
       }
       printf "%-6s %-6s %-7s %s %-*s %s %-*s %s %-*s %-*s\n",
         pid,
@@ -2391,8 +2771,8 @@ render_dashboard() {
   swap_reference_text="$cached_mib MiB cached"
   data_reference_text="$data_used_gib GiB used"
   agent_cpu_cores=$(awk -v percent="$AGENT_CPU_PERCENT" 'BEGIN { printf "%.2f", percent / 100.0 }')
-  global_cpu_cores=$(awk -v percent="$GLOBAL_CPU_PERCENT" 'BEGIN { printf "%.2f", percent / 100.0 }')
-  global_cpu_text="${global_cpu_cores} cores"
+  global_cpu_cores=$(awk -v percent="$GLOBAL_CPU_RAW_PERCENT" 'BEGIN { printf "%.2f", percent / 100.0 }')
+  global_cpu_text="${global_cpu_cores}/${CPU_COUNT} cores"
   resource_available_width=$(text_width "$mem_available_text")
   current_width=$(text_width "$swap_available_text")
   if [ "$current_width" -gt "$resource_available_width" ]; then
@@ -2412,21 +2792,42 @@ render_dashboard() {
     resource_reference_width=$current_width
   fi
   resource_bar_width=$(compute_resource_bar_width "$resource_available_width" "$resource_reference_width")
-  agent_summary=""
+  agent_type_summary=""
   for root_entry in $AGENT_ROOT_SUMMARY; do
-    IFS=':' read -r root_name root_count root_rss_kb <<EOF
+    IFS=':' read -r root_name root_count child_count root_rss_kb child_rss_kb type_cpu <<EOF
 $root_entry
 EOF
     root_rss_mib=$(to_mib "$root_rss_kb")
+    child_rss_mib=$(to_mib "$child_rss_kb")
+    type_rss_mib=$(to_mib "$((root_rss_kb + child_rss_kb))")
+    process_count=$((root_count + child_count))
     root_label=$(printf '%s' "$root_name" | awk '{ print toupper($0) }')
-    summary_part="${root_label}: ${root_count} proc  RSS ${root_rss_mib} MiB"
+    summary_part="${root_label}: ${root_count} agents + ${child_count} child = ${process_count} proc  CPU ${type_cpu}%  RSS ${root_rss_mib} + ${child_rss_mib} = ${type_rss_mib} MiB"
     summary_part=$(render_colored_text "$summary_part" "$(role_color_code "$root_name")")
-    if [ -n "$agent_summary" ]; then
-      agent_summary="${agent_summary}    ${summary_part}"
+    if [ -n "$agent_type_summary" ]; then
+      agent_type_summary="${agent_type_summary}
+${summary_part}"
     else
-      agent_summary="$summary_part"
+      agent_type_summary="$summary_part"
     fi
   done
+  agent_cpu_cores=$(awk -v percent="$AGENT_CPU_PERCENT" 'BEGIN { printf "%.2f", percent / 100.0 }')
+  agent_rss_mib=$(to_mib "$AGENT_TOTAL_RSS_KB")
+  agent_summary="Agents: CPU ${AGENT_CPU_PERCENT}%  ${agent_cpu_cores} cores  Mem ${AGENT_MEM_PERCENT}%  ${agent_rss_mib} MiB"
+
+  cpu_claude_percent=$(awk -v cpu="$CLAUDE_CPU_PERCENT" -v count="$CPU_COUNT" 'BEGIN { if (count <= 0) count=1; printf "%.4f", cpu/count }')
+  cpu_codex_percent=$(awk -v cpu="$CODEX_CPU_PERCENT" -v count="$CPU_COUNT" 'BEGIN { if (count <= 0) count=1; printf "%.4f", cpu/count }')
+  cpu_other_percent=$(awk -v total="$GLOBAL_CPU_PERCENT" -v claude="$cpu_claude_percent" -v codex="$cpu_codex_percent" 'BEGIN { value=total-claude-codex; if (value<0) value=0; printf "%.4f", value }')
+  cpu_idle_percent=$(awk -v total="$GLOBAL_CPU_PERCENT" 'BEGIN { value=100-total; if (value<0) value=0; printf "%.4f", value }')
+  mem_claude_percent=$(safe_percent "$CLAUDE_RSS_KB" "$MEM_TOTAL_KB")
+  mem_codex_percent=$(safe_percent "$CODEX_RSS_KB" "$MEM_TOTAL_KB")
+  mem_other_percent=$(awk -v total="$MEM_TOTAL_KB" -v available="$MEM_AVAILABLE_KB" -v claude="$CLAUDE_RSS_KB" -v codex="$CODEX_RSS_KB" 'BEGIN {
+    value = total - available - claude - codex;
+    if (value < 0) value = 0;
+    if (total <= 0) percent = 0;
+    else percent = value / total * 100;
+    printf "%.4f", percent;
+  }')
 
   if [ "$STYLE_ENABLED" -eq 1 ]; then
     render_title_bar "$now"
@@ -2436,14 +2837,13 @@ EOF
     render_plain_header_line
   fi
   render_tasks_line "$TASK_TOTAL_COUNT" "$TASK_RUNNING_COUNT" "$TASK_SLEEPING_COUNT" "$TASK_STOPPED_COUNT" "$TASK_ZOMBIE_COUNT"
-  render_resource_line "CPU:" "$GLOBAL_CPU_PERCENT" utilization "$global_cpu_text" "all processes" "$resource_bar_width" "$resource_available_width"
-  render_resource_line "Mem:" "$MEM_AVAILABLE_PERCENT" availability "$mem_available_text" "$mem_reference_text" "$resource_bar_width" "$resource_available_width"
+  render_composition_line "CPU:" "$GLOBAL_CPU_PERCENT" utilization "$global_cpu_text" "all processes" "$resource_bar_width" "$resource_available_width" "$cpu_claude_percent" "$cpu_codex_percent" "$cpu_other_percent" "$cpu_idle_percent"
+  render_composition_line "Mem:" "$MEM_AVAILABLE_PERCENT" availability "$mem_available_text" "$mem_reference_text" "$resource_bar_width" "$resource_available_width" "$mem_claude_percent" "$mem_codex_percent" "$mem_other_percent" "$MEM_AVAILABLE_PERCENT"
   render_resource_line "Swap:" "$SWAP_FREE_PERCENT" availability "$swap_available_text" "$swap_reference_text" "$resource_bar_width" "$resource_available_width"
   render_resource_line "/data:" "$DATA_FREE_PERCENT" disk_availability "$data_available_text" "$data_reference_text" "$resource_bar_width" "$resource_available_width"
+  render_panel_lines_wrapped "$agent_type_summary"
   render_panel_lines_wrapped "$agent_summary"
-  render_panel_lines_wrapped "AgentsCPU: $(render_bar "$AGENT_CPU_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_PERCENT" utilization "%  ${agent_cpu_cores} cores")"
   render_panel_lines_wrapped "AgentsCPU(norm): $(render_bar "$AGENT_CPU_NORM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_CPU_NORM_PERCENT" utilization "%")"
-  render_panel_lines_wrapped "AgentsMem: $(render_bar "$AGENT_MEM_PERCENT" "$SUMMARY_BAR_WIDTH" utilization) $(render_metric_text "$AGENT_MEM_PERCENT" utilization "%")"
   if [ "$SUMMARY_ONLY" -eq 1 ]; then
     if [ -n "$STATUS_MESSAGE" ]; then
       render_status_line "$STATUS_MESSAGE"
@@ -2498,6 +2898,14 @@ run_once() {
   collect_task_metrics
   CPU_COUNT=$(detect_cpu_count)
   collect_global_cpu
+  if is_fixture_mode && [ -z "$TEST_PS_FILE" ]; then
+    FRAME_LOCATION_MAP=""
+    FRAME_LOCATION_WIDTH=$DEFAULT_PROCESS_LOCATION_WIDTH
+  else
+    FRAME_LOCATION_MAP=$(collect_agent_locations)
+    FRAME_LOCATION_WIDTH=$(calculate_location_width)
+  fi
+  configure_process_location_layout
   AGENT_CPU_NORM_PERCENT=$(awk -v percent="$AGENT_CPU_PERCENT" -v count="$CPU_COUNT" 'BEGIN {
     if (count <= 0) {
       count = 1;
@@ -2557,8 +2965,9 @@ run_loop() {
     LOOP_ITERATION=$((LOOP_ITERATION + 1))
     previous_width=$PANEL_WIDTH
     previous_height=$PANEL_HEIGHT
+    previous_location_width=$PROCESS_LOCATION_WIDTH
     configure_layout
-    if [ "$RESIZE_PENDING" -eq 1 ] || [ "$PANEL_WIDTH" -ne "$previous_width" ] || [ "$PANEL_HEIGHT" -ne "$previous_height" ]; then
+    if [ "$RESIZE_PENDING" -eq 1 ] || [ "$PANEL_WIDTH" -ne "$previous_width" ] || [ "$PANEL_HEIGHT" -ne "$previous_height" ] || [ "$PROCESS_LOCATION_WIDTH" -ne "$previous_location_width" ]; then
       PREVIOUS_FRAME=""
       RESIZE_PENDING=0
     fi
@@ -2566,6 +2975,9 @@ run_loop() {
     process_live_input
     if [ "$EXIT_REQUESTED" -eq 1 ]; then break; fi
     current_frame=$(run_once)
+    if [ "$PROCESS_LOCATION_WIDTH" -ne "$previous_location_width" ]; then
+      PREVIOUS_FRAME=""
+    fi
     clamp_tree_focus "$current_frame"
     current_frame=$(clip_frame_to_terminal_height "$current_frame")
     printf '\033[H'

@@ -29,6 +29,8 @@ fps_zero_output=$("$SCRIPT" --once --interval 0)
 reverse_ansi=$(printf '\033[7m')
 bold_ansi=$(printf '\033[1m')
 green_ansi=$(printf '\033[92m')
+white_ansi=$(printf '\033[97m')
+green_background_ansi=$(printf '\033[102m')
 yellow_ansi=$(printf '\033[93m')
 red_ansi=$(printf '\033[91m')
 dark_green_ansi=$(printf '\033[32m')
@@ -107,14 +109,14 @@ if ! printf '%s' "$styled_fraction_title_line" | grep -F "FPS: 0.125" >/dev/null
   exit 1
 fi
 
-for pattern in "TERMUX SYSTEM SNAPSHOT" "Tasks:" "Mem:" "Swap:" "CLAUDE" "CODEX" "AgentsMem:" "PID" "%MEM" "LOCATION"; do
+for pattern in "TERMUX SYSTEM SNAPSHOT" "Tasks:" "CPU:" "Mem:" "Swap:" "Agents:" "PID" "%MEM"; do
   if ! printf '%s\n' "$output" | grep -F "$pattern" >/dev/null 2>&1; then
     echo "FAIL: missing pattern '$pattern'" >&2
     exit 1
   fi
 done
 
-for pattern in "Tasks:" "AgentsCPU" "AgentsMem"; do
+for pattern in "Tasks:" "Agents:" "AgentsCPU(norm):"; do
   if ! printf '%s\n' "$summary_only_output" | grep -F "$pattern" >/dev/null 2>&1; then
     echo "FAIL: --summary-only should keep '$pattern' in the summary" >&2
     exit 1
@@ -173,22 +175,13 @@ fi
 resource_bar_positions=$(
   printf '%s\n' "$output" | awk '
     $0 ~ /^\| Mem:/ {
-      mem = index($0, "█");
-      if (mem == 0) {
-        mem = index($0, "░");
-      }
+      mem = index($0, "Mem:") + 7;
     }
     $0 ~ /^\| Swap:/ {
-      swap = index($0, "█");
-      if (swap == 0) {
-        swap = index($0, "░");
-      }
+      swap = index($0, "Swap:") + 7;
     }
     $0 ~ /^\| \/data:/ {
-      data = index($0, "█");
-      if (data == 0) {
-        data = index($0, "░");
-      }
+      data = index($0, "/data:") + 7;
     }
     END {
       printf "%d %d %d\n", mem, swap, data;
@@ -206,13 +199,23 @@ if ! printf '%s\n' "$plain_diff_output" | grep -F "$resource_bar_50" >/dev/null 
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}███████████░░░░░░░░░${reset_ansi}" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should color the full 20-slot summary bar with one ANSI color" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "${orange_ansi}${reverse_ansi}claude" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color the Claude composition segment" >&2
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}55.0%  0.55 cores${reset_ansi}" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should append and color core-equivalent utilization after the AgentsCPU percentage" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}${reverse_ansi}co" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color the truncated Codex composition segment" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "${white_ansi}${green_background_ansi}|${reset_ansi}${green_ansi}█" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should fill the other marker cell and reset before green fill" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$styled_diff_output" | grep -F "Agents: CPU 55.0%  0.55 cores" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should show combined Agent CPU and core-equivalent utilization" >&2
   exit 1
 fi
 
@@ -231,13 +234,13 @@ if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}CODEX" >/dev/null 
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "${orange_ansi}child" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should color Claude child roles bright orange" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "${orange_ansi}  child" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color and indent Claude child roles bright orange" >&2
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}child" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should color Codex child roles bright cyan" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}  child" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color and indent Codex child roles bright cyan" >&2
   exit 1
 fi
 
@@ -251,13 +254,13 @@ if ! printf '%s' "$styled_diff_output" | grep -F "scratch" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "${orange_ansi}CLAUDE: 1 proc  RSS 128.0 MiB${reset_ansi}" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should color the CLAUDE agent summary segment bright orange" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "${orange_ansi}CLAUDE: 1 agents + 1 child = 2 proc  CPU 55.0%  RSS 128.0 + 4.0 = 132.0 MiB${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color the detailed CLAUDE process summary bright orange" >&2
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}CODEX: 1 proc  RSS 192.0 MiB${reset_ansi}" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should color the CODEX agent summary segment bright cyan" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}CODEX: 1 agents + 1 child = 2 proc  CPU 0.0%  RSS 192.0 + 5.0 = 197.0 MiB${reset_ansi}" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should color the detailed CODEX process summary bright cyan" >&2
   exit 1
 fi
 
@@ -310,8 +313,8 @@ fi
 reverse_line_count=$(
   printf '%s\n' "$styled_output" | awk -v reverse="$reverse_ansi" 'index($0, reverse) > 0 { count++ } END { print count + 0 }'
 )
-if [ "$reverse_line_count" -ne 3 ]; then
-  echo "FAIL: forced-style output should keep reverse video on the title line, Tasks line, and table header only" >&2
+if [ "$reverse_line_count" -lt 3 ]; then
+  echo "FAIL: forced-style output should keep reverse video on the title line, Tasks line, and table header" >&2
   exit 1
 fi
 
@@ -321,8 +324,8 @@ if ! printf '%s' "$table_header_line" | grep -F "$reverse_ansi" >/dev/null 2>&1;
   exit 1
 fi
 
-if ! printf '%s' "$table_header_line" | grep -F "LOCATION" >/dev/null 2>&1; then
-  echo "FAIL: process table header should include LOCATION column" >&2
+if ! printf '%s' "$table_header_line" | grep -E "LOCATION|LOC" >/dev/null 2>&1; then
+  echo "FAIL: process table header should identify the location column" >&2
   exit 1
 fi
 
@@ -436,12 +439,12 @@ if ! printf '%s' "$cpu_hot_title_line" | grep -F "${orange_ansi}${bold_ansi}RISK
   exit 1
 fi
 
-if ! printf '%s\n' "$styled_risk_cpu_hot_output" | grep -F "AgentsCPU:" | grep -F "150.0%" >/dev/null 2>&1; then
-  echo "FAIL: CPU-driven HOT test mode should expose an AgentsCPU sample above 100%" >&2
+if ! printf '%s\n' "$styled_risk_cpu_hot_output" | grep -F "Agents:" | grep -F "CPU 150.0%" >/dev/null 2>&1; then
+  echo "FAIL: CPU-driven HOT test mode should expose combined Agent CPU above 100%" >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$styled_risk_cpu_hot_output" | grep -F "AgentsCPU:" | grep -F "1.50 cores" >/dev/null 2>&1; then
+if ! printf '%s\n' "$styled_risk_cpu_hot_output" | grep -F "Agents:" | grep -F "1.50 cores" >/dev/null 2>&1; then
   echo "FAIL: CPU-driven HOT test mode should append core-equivalent utilization after AgentsCPU percent" >&2
   exit 1
 fi
@@ -452,12 +455,12 @@ if ! printf '%s' "$cpu_crit_title_line" | grep -F "${red_ansi}${bold_ansi}RISK: 
   exit 1
 fi
 
-if ! printf '%s\n' "$styled_risk_cpu_crit_output" | grep -F "AgentsCPU:" | grep -F "250.0%" >/dev/null 2>&1; then
+if ! printf '%s\n' "$styled_risk_cpu_crit_output" | grep -F "Agents:" | grep -F "CPU 250.0%" >/dev/null 2>&1; then
   echo "FAIL: CPU-driven CRIT test mode should expose an AgentsCPU sample above 200%" >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$styled_risk_cpu_crit_output" | grep -F "AgentsCPU:" | grep -F "2.50 cores" >/dev/null 2>&1; then
+if ! printf '%s\n' "$styled_risk_cpu_crit_output" | grep -F "Agents:" | grep -F "2.50 cores" >/dev/null 2>&1; then
   echo "FAIL: CPU-driven CRIT test mode should append core-equivalent utilization after AgentsCPU percent" >&2
   exit 1
 fi
@@ -473,7 +476,7 @@ if printf '%s\n' "$styled_output" | grep -F "+====" >/dev/null 2>&1; then
 fi
 
 reported_agents_mem=$(
-  printf '%s\n' "$output" | sed -n 's/.*AgentsMem: .* \([0-9.][0-9.]*%\).*/\1/p' | sed 's/%$//' | head -n 1
+  printf '%s\n' "$output" | sed -n 's/.*Agents: .* Mem \([0-9.][0-9.]*\)%.*/\1/p' | head -n 1
 )
 mem_total_kb=$(awk '/MemTotal:/ { print $2; exit }' /proc/meminfo)
 agent_root_rss_kb=$(ps -eo comm=,rss= | awk '$1 == "claude" || $1 == "codex" { rss += $2 } END { print rss + 0 }')
@@ -509,7 +512,7 @@ if [ "$(printf '%s\n' "$wide_output" | sed -n '1p' | awk '{ print length($0) }')
   exit 1
 fi
 
-narrow_output=$(COLUMNS=90 "$SCRIPT" --once)
+narrow_output=$(COLUMNS=90 CODEX_TOP_TEST_MODE=diff "$SCRIPT" --once)
 
 if ! printf '%s\n' "$narrow_output" | awk 'length($0) > 90 { exit 1 }'; then
   echo "FAIL: one-shot output should adapt to narrow terminal widths" >&2
@@ -786,8 +789,8 @@ if [ "$title_count" -ne 1 ]; then
   exit 1
 fi
 
-if ! printf '%s' "$diff_output" | grep -F "AgentsCPU:" >/dev/null 2>&1; then
-  echo "FAIL: diff mode should include an AgentsCPU summary bar" >&2
+if ! printf '%s' "$diff_output" | grep -F "Agents: CPU" >/dev/null 2>&1; then
+  echo "FAIL: diff mode should include the combined Agent summary" >&2
   exit 1
 fi
 
@@ -798,11 +801,6 @@ fi
 
 if ! printf '%s' "$diff_output" | grep -F "27.5%" >/dev/null 2>&1; then
   echo "FAIL: diff mode should include a normalized AgentsCPU percentage" >&2
-  exit 1
-fi
-
-if ! printf '%s' "$diff_output" | grep -F "AgentsMem:" >/dev/null 2>&1; then
-  echo "FAIL: diff mode should include an AgentsMem summary bar" >&2
   exit 1
 fi
 

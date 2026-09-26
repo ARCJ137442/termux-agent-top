@@ -21,8 +21,8 @@ if [ "$(wc -l <"$log" | awk '{print $1}')" -ne 1 ]; then
   echo 'FAIL: one frame should collect one full process snapshot' >&2
   exit 1
 fi
-printf '%s\n' "$output" | grep -F 'CLAUDE: 1 proc' >/dev/null
-printf '%s\n' "$output" | grep -F 'CODEX: 1 proc' >/dev/null
+printf '%s\n' "$output" | grep -F 'CLAUDE: 1 agents + 1 child = 2 proc' >/dev/null
+printf '%s\n' "$output" | grep -F 'CODEX: 1 agents + 1 child = 2 proc' >/dev/null
 printf '%s\n' "$output" | grep -F 'CLAUDE' >/dev/null
 if printf '%s\n' "$output" | grep -F 'CODEX                          |- node' >/dev/null; then
   echo 'FAIL: Codex child was promoted to an Agent' >&2
