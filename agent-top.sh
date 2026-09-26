@@ -70,8 +70,6 @@ ANSI_BRIGHT_CLAUDE="$ANSI_BRIGHT_ORANGE"
 ANSI_BRIGHT_CODEX="$(printf '\033[38;2;110;235;255m')"
 ANSI_BRIGHT_RED="$(printf '\033[91m')"
 ANSI_BRIGHT_GREEN="$(printf '\033[92m')"
-ANSI_BRIGHT_WHITE="$(printf '\033[97m')"
-ANSI_BRIGHT_BG_GREEN="$(printf '\033[102m')"
 ANSI_BRIGHT_YELLOW="$(printf '\033[93m')"
 ANSI_GREEN="$(printf '\033[32m')"
 
@@ -699,29 +697,27 @@ render_composition_bar() {
     -v ansi_claude="$ANSI_BRIGHT_CLAUDE" \
     -v ansi_codex="$ANSI_BRIGHT_CODEX" \
     -v ansi_other="$ANSI_BRIGHT_GREEN" \
-    -v ansi_white="$ANSI_BRIGHT_WHITE" \
-    -v ansi_other_bg="$ANSI_BRIGHT_BG_GREEN" \
     -v reset="$ANSI_RESET" '
     function clamp(value) {
       if (value < 0) return 0;
       if (value > 100) return 100;
       return value;
     }
-    function segment_text(label, width, fill, color, reverse_video,    text, i) {
+    function style_segment(text, color, reverse_video) {
+      if (styled != 1 || color == "") return text;
+      if (reverse_video == 1) return color reverse text reset;
+      return color text reset;
+    }
+    function segment_text(label, width, fill, color, reverse_video,    text, i, marker_text, fill_text) {
       if (width <= 0) return "";
       if (label == "|") {
-        if (styled == 1 && color != "") {
-          text = ansi_white ansi_other_bg label reset;
-          if (width > 1) {
-            text = text color;
-            for (i = 2; i <= width; i++) text = text fill;
-            text = text reset;
-          }
-          return text;
+        marker_text = style_segment(label, color, 1);
+        if (width > 1) {
+          fill_text = "";
+          for (i = 2; i <= width; i++) fill_text = fill_text fill;
+          return marker_text style_segment(fill_text, color, 0);
         }
-        text = label;
-        for (i = 2; i <= width; i++) text = text fill;
-        return text;
+        return marker_text;
       }
       if (label != "") {
         text = substr(label, 1, width);
@@ -733,11 +729,7 @@ render_composition_bar() {
         text = "";
         for (i = 1; i <= width; i++) text = text fill;
       }
-      if (styled == 1 && color != "") {
-        if (reverse_video == 1) return color reverse text reset;
-        return color text reset;
-      }
-      return text;
+      return style_segment(text, color, reverse_video);
     }
     BEGIN {
       values[1] = clamp(claude_percent + 0);

@@ -71,14 +71,13 @@ if ! printf '%s\n' "$output" | grep -F 'Mem:' | grep -F 'cod' >/dev/null 2>&1; t
 fi
 
 green_ansi=$(printf '\033[92m')
-white_ansi=$(printf '\033[97m')
-green_background_ansi=$(printf '\033[102m')
+reverse_ansi=$(printf '\033[7m')
 reset_ansi=$(printf '\033[0m')
 block=$(printf '█')
-if ! printf '%s\n' "$output" | awk -v green="$green_ansi" -v white="$white_ansi" -v green_background="$green_background_ansi" -v reset="$reset_ansi" -v block="$block" '
+if ! printf '%s\n' "$output" | awk -v green="$green_ansi" -v reverse="$reverse_ansi" -v reset="$reset_ansi" -v block="$block" '
   /^Mem:/ {
-    marker = white green_background "|" reset green;
-    start = index($0, white green_background "|" reset);
+    marker = green reverse "|" reset green;
+    start = index($0, green reverse "|" reset);
     if (start == 0) exit 1;
     segment = substr($0, start);
     if (substr(segment, 1, length(marker)) != marker) exit 1;
@@ -92,7 +91,7 @@ if ! printf '%s\n' "$output" | awk -v green="$green_ansi" -v white="$white_ansi"
   }
   END { exit !found }
 '; then
-  echo 'FAIL: the other segment must render as a white-on-green | marker followed by green blocks with explicit resets' >&2
+  echo 'FAIL: the other segment must render a black-on-green | marker followed by green blocks with explicit resets' >&2
   exit 1
 fi
 

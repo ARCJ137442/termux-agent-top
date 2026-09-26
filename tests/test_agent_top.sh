@@ -209,8 +209,8 @@ if ! printf '%s' "$styled_diff_output" | grep -F "${cyan_ansi}${reverse_ansi}co"
   exit 1
 fi
 
-if ! printf '%s' "$styled_diff_output" | grep -F "${white_ansi}${green_background_ansi}|${reset_ansi}${green_ansi}█" >/dev/null 2>&1; then
-  echo "FAIL: forced diff output should fill the other marker cell and reset before green fill" >&2
+if ! printf '%s' "$styled_diff_output" | grep -F "${green_ansi}${reverse_ansi}|${reset_ansi}${green_ansi}█" >/dev/null 2>&1; then
+  echo "FAIL: forced diff output should render the other marker as black-on-green and reset before green fill" >&2
   exit 1
 fi
 

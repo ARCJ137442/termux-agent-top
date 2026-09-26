@@ -40,7 +40,11 @@ Make current Claude Code and Codex processes discoverable by semantic identity r
 - Completed: deterministic identity regression fixture.
 - Completed: tmux context-root rendering and filtering with deterministic fixture coverage.
 - Completed: Claude/Codex type summaries render on separate lines with complete-tree CPU/RSS totals.
-- Completed: CPU/Mem composition bars show Claude, Codex, other, and idle/available segments; the `other` marker uses a filled green-background boundary cell and separate explicit resets, verified at the ANSI-byte boundary to prevent dark fill or reverse-video leakage.
+- Completed: CPU/Mem composition bars show Claude, Codex, other, and idle/available segments; the `other` marker uses the same theme-color-plus-reverse protocol as agent labels, with separate resets before and after green fill, verified at the ANSI-byte boundary to prevent dark fill or style drift.
 - Completed: process-table presentation includes two-space child roles, compact Termux paths, one shared dynamic LOCATION width used by every row, narrow-terminal command truncation, and `..` location truncation markers.
 - Completed: full fixture suite, shell syntax checks, `git diff --check`, and benchmark run before publication.
 - Pending: post-release system-wide design discussion using `$super-questioning`.
+
+The follow-up ANSI rendering review and its executable contract are tracked in
+`docs/plans/2026-09-26-ansi-rendering-review.md` and
+`docs/ansi-rendering-contract.md`.
