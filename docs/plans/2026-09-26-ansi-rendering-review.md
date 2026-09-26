@@ -16,7 +16,7 @@ byte-order tests, and a documented review checklist.
 - [x] Route marker and fill through one shared segment-style helper.
 - [x] Add narrow-width, CPU/Mem, plain-mode, reset-order, and visible-width tests.
 - [x] Document root causes, invariants, and the pre-merge checklist.
-- [x] Publish the verified v0.3.1 patch release.
+- [ ] Publish the verified v0.3.1 patch release.
 
 ## Acceptance Criteria
 
@@ -26,3 +26,9 @@ byte-order tests, and a documented review checklist.
 - Styled output and plain output have the same visible resource-line width.
 - No white-on-green marker output path remains in the implementation; tests may retain the old bytes only as a negative assertion.
 - Focused and full regression suites pass before release.
+
+## Release Status
+
+The rendering fix is published on `origin/main` as commit `49a24a4`. The
+verified v0.3.1 patch tag has not yet been created or pushed; keep this task
+open until that release step succeeds.
