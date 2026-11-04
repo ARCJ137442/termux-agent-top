@@ -59,6 +59,8 @@ HELP_TTL_FRAMES=6
 ARMED_PID=""
 ARMED_CPU=""
 ARMED_COMMAND=""
+# 武装时刻（epoch 秒）。窗口策略见 armed_window_seconds()。
+ARMED_AT=0
 ARMED_UNTIL=0
 TREE_FOCUS=0
 # 视图开关：f 折叠进程树，c 只显示可执行文件名。
@@ -1696,6 +1698,39 @@ execute_hotkey_kill() {
   kill -9 "$pid" 2>/dev/null
 }
 
+# ── TODO(human)：双击确认的窗口策略 ────────────────────────────────────────
+# 这个函数决定「第二次 k 在多久之内仍算确认」。它是整个热键唯一的
+# **容错 ↔ 安全**旋钮，两边会打架：
+#   窗口太短 → 用户明明按了两下却没杀掉。而且过期后重新武装的提示文案
+#              （"ARMED: press k again…"）与上一帧**一模一样**，diff 渲染
+#              下一个字节都不会输出 —— 屏幕上看不出发生过任何事。
+#              这就是本次调查实测到的故障：--interval 5 下帧周期 5.23–5.64 s，
+#              整秒判定把窗口变成 (5,6] 秒的抽签，14 次双击里 7 次静默过期。
+#   窗口太长 → 早先那次武装还活着，用户后来随手一按就杀掉了一个他已经
+#              忘记的目标。SIGKILL 不可撤销，这一侧没有兜底。
+#
+# 硬约束（不满足就是缺陷，不是口味）：窗口必须**大于一个帧周期**。
+# 按键本来就每帧才读一次，所以「第二下 k」与「第一下」的最小间隔就是
+# 一个帧周期；窗口不长于它，等于设计上做不到。
+#
+# 兜底实现已按 max(5, INTERVAL_SECONDS + 2) 给出，能通过验收测试。
+# 请你决定这条线画在哪，并把它写成策略。可参考的方向：
+#   a) 固定秒数（当前兜底）：最直白，但 --interval 很大时仍会被吃掉
+#   b) 跟随帧周期：例如 INTERVAL_SECONDS * 2，天然适配任何刷新节奏
+#   c) 几乎不失效：返回一个很大的数，把「安全」完全交给「其它按键取消武装」
+#      来兜（注意：目前并没有「其它按键取消武装」这个机制，选 c 要一并加）
+#
+# 验收：tests/test_hotkey_window.sh 断言 window > INTERVAL_SECONDS，
+# 且 window 仍有界（确认手势得是手势）。相关状态：ARMED_AT（武装时刻）、
+# LOOP_ITERATION（当前帧号，如果你想按帧而不是按秒计）。
+armed_window_seconds() {
+  window=$((INTERVAL_SECONDS + 2))
+  if [ "$window" -lt 5 ]; then
+    window=5
+  fi
+  printf '%s' "$window"
+}
+
 perform_hotkey_kill() {
   now=$(date +%s)
   if [ -n "$ARMED_PID" ] && [ "$now" -le "$ARMED_UNTIL" ]; then
@@ -1731,7 +1766,8 @@ EOF
   ARMED_PID=$target_pid
   ARMED_CPU=$target_cpu
   ARMED_COMMAND=$target_command
-  ARMED_UNTIL=$((now + 5))
+  ARMED_AT=$now
+  ARMED_UNTIL=$((now + $(armed_window_seconds)))
   if [ "$rearming" -eq 1 ]; then
     set_status_message "REARMED: press k again to kill $target_label ($target_cpu%)"
   else
