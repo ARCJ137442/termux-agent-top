@@ -46,25 +46,23 @@ reset.
 The `ROLE` column of the process tree is a fixed nine-cell field rendered as:
 
 ```text
-Role field          = ThemeColor? + 9 visible cells + Reset?
+Role field          = Color + 9 visible cells + Reset
 ```
 
-- A Claude or Codex role carries its theme color: `ClaudeColor` for Claude,
-  `CodexColor` for Codex, followed by the label, the padding to nine cells, and
-  one reset.
-- The two-cell indent that marks a host-managed agent (for example an Agent
-  hosted by a T3 server) lives **inside** the color span. The indent occupies
-  the first two of the nine visible cells; the label and its padding follow.
-  The indent is a visible-cell marker, not a style boundary.
-- A host role without a theme color — currently the `T3` label for a T3 Code
-  server — is plain text: no color sequence and no reset. The absence of a
-  span is itself part of the contract, so it is asserted as such.
-- The nine-cell width is a hard limit. The indented `  CLAUDE` label already
-  uses eight of the nine cells; a longer indent or a wider label would break
-  the column.
-
-The process tree is the only place where the indent appears; the resource bars
-never carry one.
+- Color carries **attribution**, the label carries **identity**:
+  - an Agent started by the user keeps its type color — `ClaudeColor` for
+    Claude, `CodexColor` for Codex;
+  - an Agent managed by a host (for example a T3 Code server) wears the
+    **host color**, and the host's own row wears that same color, so a group
+    reads as one color block.
+- The color code sits immediately before the label; no indentation is used to
+  mark attribution. The `ROLE` column is only nine cells wide, and the
+  `child` rows already spend two of them on an indent — spending more of the
+  column on attribution would fight the tree hierarchy for the same space.
+- The nine-cell width is a hard limit: `CLAUDE` uses six cells and `CODEX`
+  uses five; the padding to nine is what keeps the following columns aligned.
+- The process tree is the only place where the `ROLE` field appears; the
+  resource bars never carry one.
 
 ## Root-Cause Review
 
@@ -116,9 +114,9 @@ The repeated presentation failures came from five concrete process defects:
 | Plain mode | no CSI/ANSI sequences |
 | Visible width | styled and plain lines have equal visible width |
 | No rejected path | no white-on-green marker codes |
-| Host-managed role | theme color, then the two-cell indent, then the label |
-| Unmanaged role | theme color immediately followed by the label |
-| Host role (`T3`) | plain text, no color span, no reset |
+| Host-managed role | host color immediately before the label, no indent |
+| Unmanaged role | type color immediately before the label |
+| Host row (`T3`) | the same host color as the Agents it manages |
 
 The executable regression suite is `tests/test_ansi_rendering.sh`; the broader
 resource and dashboard suites remain required as well.
@@ -146,7 +144,8 @@ white-text regression and the earlier black-fill regression without changing
 the intended color distinction between Claude, Codex, other, and idle.
 
 As of 2026-11-04, the `ROLE` field follows the protocol above: a nine-cell
-field, an in-span two-cell indent for host-managed Agents, and a plain `T3`
-label for a T3 Code server. The byte-order assertions live in
+field where the color states the attribution — type color for an Agent the
+user started, host color for an Agent a host manages — and the label states
+the identity. The byte-order assertions live in
 `tests/test_ansi_rendering.sh`; the grouping contract itself is pinned by
 `tests/test_t3_managed_agents.sh`.

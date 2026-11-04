@@ -68,6 +68,9 @@ ANSI_NO_BOLD="$(printf '\033[22m')"
 ANSI_BRIGHT_ORANGE="$(printf '\033[38;2;255;170;0m')"
 ANSI_BRIGHT_CLAUDE="$ANSI_BRIGHT_ORANGE"
 ANSI_BRIGHT_CODEX="$(printf '\033[38;2;110;235;255m')"
+# 宿主管辖的 agent 用这个颜色：与 Claude(橙)/Codex(青) 都不同，
+# 一眼能看出「这个不是自己起的，是某个宿主拉起来的」。
+ANSI_BRIGHT_HOSTED="$(printf '\033[38;2;185;125;255m')"
 ANSI_BRIGHT_RED="$(printf '\033[91m')"
 ANSI_BRIGHT_GREEN="$(printf '\033[92m')"
 ANSI_BRIGHT_YELLOW="$(printf '\033[93m')"
@@ -2424,7 +2427,7 @@ render_process_tree() {
     return
   fi
 
-  snapshot_lines | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v termux_prefix="/data/data/com.termux/files" -v location_map="$FRAME_LOCATION_MAP" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" '
+  snapshot_lines | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v termux_prefix="/data/data/com.termux/files" -v location_map="$FRAME_LOCATION_MAP" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_hosted="$ANSI_BRIGHT_HOSTED" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
@@ -2474,23 +2477,21 @@ render_process_tree() {
     }
     # 「被宿主管辖」的 ROLE 标注
     #
-    # TODO(human): 定「宿主管辖」在 ROLE 列上怎么标注
-    #   现在默认：t3 宿主 → 向前缩进两格（"  CLAUDE"），和子进程的 "  child" 对称；
-    #             tmux 宿主 → 不缩进（"CLAUDE"），靠它上面的宿主行区分。
-    #   可选改法：
-    #     a) tmux 也缩进 —— 缩进统一表示「被宿主管辖」，宿主由父行区分；
-    #     b) 缩进改 4 格，和树形前缀的层级对齐；
-    #     c) 换成显式前缀（"T3>CLAUDE"），ROLE 列宽 9 装得下。
-    #   约束：ROLE 列宽是 9，"  CLAUDE" 已占 8 格，改完别超宽。
-    function hosted_role_label(kind_text, pid) {
-      if (t3_agent_parent[pid] != "") {
-        return "  " kind_text;
-      }
-      return kind_text;
+    # 决定（2026-11-04）：**不缩进，改用颜色区分**。
+    #   - 独立的 agent：ROLE 用自己的类型色（Claude 橙 / Codex 青）；
+    #   - 被宿主管辖的 agent：ROLE 用宿主的颜色（紫），标签文字仍然是 CLAUDE/CODEX，
+    #     所以「是什么」看文字，「归谁管」看颜色；
+    #   - 宿主自己那一行（T3）用同一个紫色，一行颜色就能看出归属。
+    #
+    # 为什么不用缩进表达归属：ROLE 列只有 9 格，缩进要吃掉可见宽度；
+    # 而且 tmux 下的 agent 本来就不缩进，用缩进表示「被管辖」会前后不一致
+    # —— 归属必须是一个正交的信号，不能和树形层级混在一起。
+    function is_hosted_agent(pid) {
+      return t3_agent_parent[pid] != "";
     }
     function role_label(root_kind, depth, pid) {
       if (kind[pid] != "") {
-        return hosted_role_label(toupper(kind[pid]), pid);
+        return toupper(kind[pid]);
       }
       if (depth == 0) {
         if (root_kind == "claude") {
@@ -2586,9 +2587,14 @@ render_process_tree() {
       }
       return ansi_green;
     }
-    function role_color(root_kind) {
+    # ROLE 字段的颜色：归属靠颜色，不靠缩进。
+    # 宿主管辖的 agent 和宿主自己那一行都用宿主色，一眼看得出谁管谁。
+    function role_color(root_kind, pid) {
       if (style_enabled != 1) {
         return "";
+      }
+      if (is_hosted_agent(pid) || is_t3_server(pid)) {
+        return ansi_hosted;
       }
       if (root_kind == "claude") {
         return ansi_claude;
@@ -2618,7 +2624,7 @@ render_process_tree() {
     }
     function render_role_text(root_kind, depth, width, plain_text, pid) {
       plain_text = sprintf("%-*s", width, role_label(root_kind, depth, pid));
-      return style_text(plain_text, role_color(root_kind));
+      return style_text(plain_text, role_color(root_kind, pid));
     }
     function compact_path_prefix(text, prefix, replacement,    pos, before, after, result) {
       result = "";
@@ -2789,15 +2795,10 @@ render_process_tree() {
           t3_display[t3_pid] = 1;
         }
       }
-      # 2) t3 自己跑在 tmux 里时，tmux 行照样要显示（保留会话上下文）
-      for (i = 1; i <= root_pid_count; i++) {
-        pid_val = root_order[i];
-        if (!t3_display[pid_val]) continue;
-        tmux_pid = nearest_tmux(pid_val);
-        if (tmux_pid != "") {
-          tmux_display[tmux_pid] = 1;
-        }
-      }
+      # 2) tmux 行只认「直接挂着 agent」的会话。
+      #    t3 管辖的 agent 归 T3 行，t3 所在的 tmux 因此没有直接子 agent ——
+      #    这种 tmux 不显示（用户决定：没有 Claude/Codex 子进程的 tmux 没有信息量，
+      #    只会占掉树的空间）。T3 自己单独成一行。
       # 3) 其余 agent 仍按 tmux 分组
       for (i = 1; i <= root_pid_count; i++) {
         pid_val = root_order[i];

@@ -135,11 +135,12 @@ fi
 
 # ── ROLE 列的字节序 ──────────────────────────────────────────────────────
 # ROLE 列是固定 9 格，渲染协议：
-#   [主题色] + 9 个可见格 + [reset]
-# 其中「可见格」的前两格可以是缩进 —— 缩进属于颜色段内部（空格本身不着色，
-# 但仍然在 span 里），所以断言必须落在「紧贴标签之前的字节」上。
+#   [颜色] + 9 个可见格 + [reset]
 #
-# t3 服务自己那一行没有主题色：ROLE = "T3" 是纯文本，不带 color/reset。
+# 颜色即归属（2026-11-04 决定，不再用缩进表达归属）：
+#   - 独立的 agent：类型色（Claude 橙 / Codex 青）
+#   - 被宿主管辖的 agent、以及宿主自己那一行：宿主色（紫）
+# 所以断言落在「紧贴标签之前的字节」上：颜色码必须紧贴标签，中间没有缩进空格。
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT
 cat >"$fixture_dir/t3.ps" <<'EOF_FIXTURE'
@@ -192,48 +193,50 @@ if [ -z "$t3_styled_row" ] || [ -z "$hosted_claude_row" ] || [ -z "$hosted_codex
   exit 1
 fi
 
-# 1) t3 服务自己的 ROLE 字段是纯文本：标签之前不得出现任何 CSI 序列
-#    （上一格进度条自己的 reset 结束符是允许的，它不属于 ROLE 字段）
+# 1) 宿主自己那一行用宿主色
+hosted=$(printf '\033[38;2;185;125;255m')
 t3_before=$(bytes_before "$t3_styled_row" 'T3')
 if [ -z "$t3_before" ]; then
   echo 'FAIL: the T3 role label could not be located in its row' >&2
   exit 1
 fi
 case "$t3_before" in
-  *"${escape}["*)
-    echo 'FAIL: the T3 role label must be plain text without a color span' >&2
+  *"${hosted}")
+    ;;
+  *)
+    echo 'FAIL: the T3 role label must wear the host color' >&2
     exit 1
     ;;
 esac
 
-# 2) 被 t3 管辖的 agent：主题色 → 两格缩进 → 标签，顺序不能反
+# 2) 被 t3 管辖的 agent：宿主色紧贴标签，中间没有缩进空格
 claude_before=$(bytes_before "$hosted_claude_row" 'CLAUDE')
 case "$claude_before" in
-  *"${orange}  ")
+  *"${hosted}")
     ;;
   *)
-    echo "FAIL: a T3-hosted Claude role must render theme color, then the two-space indent, then the label" >&2
+    echo 'FAIL: a T3-hosted Claude role must wear the host color directly before the label' >&2
     exit 1
     ;;
 esac
 
 codex_before=$(bytes_before "$hosted_codex_row" 'CODEX')
 case "$codex_before" in
-  *"${cyan}  ")
+  *"${hosted}")
     ;;
   *)
-    echo "FAIL: a T3-hosted Codex role must render theme color, then the two-space indent, then the label" >&2
+    echo 'FAIL: a T3-hosted Codex role must wear the host color directly before the label' >&2
     exit 1
     ;;
 esac
 
-# 3) 不被 t3 管辖的 agent：没有缩进，颜色直接贴住标签
+# 3) 不被 t3 管辖的 agent：类型色紧贴标签
 standalone_before=$(bytes_before "$standalone_claude_row" 'CLAUDE')
 case "$standalone_before" in
   *"${orange}")
     ;;
   *)
-    echo 'FAIL: a standalone Claude role must not be indented' >&2
+    echo 'FAIL: a standalone Claude role must wear its own type color' >&2
     exit 1
     ;;
 esac
