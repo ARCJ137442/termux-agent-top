@@ -53,11 +53,19 @@ TTY_STATE=""
 STATUS_MESSAGE=""
 STATUS_TTL=0
 STATUS_TTL_FRAMES=3
+# 帮助行的存活帧数：按键后亮起来，几帧后自己淡出（渐进披露）。
+HELP_TTL=0
+HELP_TTL_FRAMES=6
 ARMED_PID=""
 ARMED_CPU=""
 ARMED_COMMAND=""
 ARMED_UNTIL=0
 TREE_FOCUS=0
+# 视图开关：f 折叠进程树，c 只显示可执行文件名。
+# 两者都是「正交」的：一个管画多少行，一个管每行画什么。
+TREE_FOLD="${AGENT_TOP_FOLD:-0}"
+COMMAND_SHORT="${AGENT_TOP_CMD:-0}"
+ANSI_ESC="$(printf '\033')"
 EXIT_REQUESTED=0
 TEST_KILL_LOG="${CODEX_TOP_TEST_KILL_LOG:-}"
 CTRL_K_CHAR="$(printf '\013')"
@@ -68,9 +76,6 @@ ANSI_NO_BOLD="$(printf '\033[22m')"
 ANSI_BRIGHT_ORANGE="$(printf '\033[38;2;255;170;0m')"
 ANSI_BRIGHT_CLAUDE="$ANSI_BRIGHT_ORANGE"
 ANSI_BRIGHT_CODEX="$(printf '\033[38;2;110;235;255m')"
-# 宿主管辖的 agent 用这个颜色：与 Claude(橙)/Codex(青) 都不同，
-# 一眼能看出「这个不是自己起的，是某个宿主拉起来的」。
-ANSI_BRIGHT_HOSTED="$(printf '\033[38;2;185;125;255m')"
 ANSI_BRIGHT_RED="$(printf '\033[91m')"
 ANSI_BRIGHT_GREEN="$(printf '\033[92m')"
 ANSI_BRIGHT_YELLOW="$(printf '\033[93m')"
@@ -105,6 +110,19 @@ if ! awk -v interval="$INTERVAL_SECONDS" 'BEGIN {
   echo "interval must be a non-negative number" >&2
   exit 1
 fi
+
+# 视图开关只认 0/1：环境变量是外部输入，不能直接进算术比较。
+case "$TREE_FOLD" in
+  1) TREE_FOLD=1 ;;
+  *) TREE_FOLD=0 ;;
+esac
+case "$COMMAND_SHORT" in
+  1) COMMAND_SHORT=1 ;;
+  *) COMMAND_SHORT=0 ;;
+esac
+
+# 帧节拍用毫秒算：渲染耗时是亚秒级的，秒级精度不够。
+INTERVAL_MS=$(awk -v interval="$INTERVAL_SECONDS" 'BEGIN { printf "%d", (interval + 0) * 1000 }')
 
 FPS_LABEL=$(
   awk -v interval="$INTERVAL_SECONDS" 'BEGIN {
@@ -1210,14 +1228,20 @@ clip_frame_to_terminal_height() {
       ;;
   esac
 
-  printf '%s\n' "$frame_text" | awk -v max_rows="$PANEL_HEIGHT" -v focus="$TREE_FOCUS" -v styled="$STYLE_ENABLED" '
-    { lines[NR]=$0; if ($0 ~ /^PID[[:space:]]+PPID/) header=NR }
+  printf '%s\n' "$frame_text" | awk -v max_rows="$PANEL_HEIGHT" -v focus="$TREE_FOCUS" -v styled="$STYLE_ENABLED" -v esc="$ANSI_ESC" '
+    # 结构探针必须只认「内容」：带样式时表头前面挂着 ESC[7m，
+    # 直接拿 /^PID/ 去匹配永远匹配不到，滚动就此失效。
+    function plain_text(text) {
+      gsub(esc "\\[[0-9;]*m", "", text);
+      return text;
+    }
+    { lines[NR]=$0; if (plain_text($0) ~ /^PID[[:space:]]+PPID/) header=NR }
     END {
       if (!header || NR <= max_rows) {
         for (i=1; i<=NR && i<=max_rows; i++) print lines[i];
         exit;
       }
-      footer=(lines[NR] ~ /^\+/ ? 1 : 0);
+      footer=(plain_text(lines[NR]) ~ /^\+/ ? 1 : 0);
       visible=max_rows-header-footer;
       if (visible < 1) {
         for (i=1; i<=max_rows; i++) print lines[i];
@@ -1240,42 +1264,53 @@ clip_frame_to_terminal_height() {
 
 clamp_tree_focus() {
   frame_text=$1
-  last_index=$(printf '%s\n' "$frame_text" | awk '
-    /^PID[[:space:]]+PPID/ { header=NR }
-    END { footer=($0 ~ /^\+/ ? 1 : 0); count=NR-header-footer; if (!header || count < 1) count=1; print count-1 }
+  last_index=$(printf '%s\n' "$frame_text" | awk -v esc="$ANSI_ESC" '
+    function plain_text(text) {
+      gsub(esc "\\[[0-9;]*m", "", text);
+      return text;
+    }
+    { if (plain_text($0) ~ /^PID[[:space:]]+PPID/) header=NR }
+    END { footer=(plain_text($0) ~ /^\+/ ? 1 : 0); count=NR-header-footer; if (!header || count < 1) count=1; print count-1 }
   ')
   if [ "$TREE_FOCUS" -gt "$last_index" ]; then TREE_FOCUS=$last_index; fi
 }
 
-sleep_until_refresh() {
-  interval="$1"
+now_ms() {
+  stamp=$(date +%s%3N 2>/dev/null || :)
+  case "$stamp" in
+    ''|*[!0-9]*)
+      # 非 GNU date 没有 %3N，退回秒级再补零。
+      stamp="$(date +%s)000"
+      ;;
+  esac
+  printf '%s' "$stamp"
+}
 
-  if awk -v interval="$interval" 'BEGIN { exit !(interval <= 0) }'; then
+sleep_until_refresh() {
+  elapsed_ms="$2"
+
+  # 帧节拍：名义间隔是「一帧到下一帧」的时间，而不是「渲染完再睡这么久」。
+  # 渲染本身要花时间，固定 sleep 会把实际刷新周期拉长成
+  # 「interval + 渲染耗时」—— 名义 1 Hz 的东西实际只有 0.4 Hz。
+  remaining_ms=$((INTERVAL_MS - elapsed_ms))
+  if [ "$remaining_ms" -le 0 ]; then
+    # 这一帧已经超过名义间隔：不再补睡，立刻进入下一帧。
     return
   fi
 
-  remaining="$interval"
-  while awk -v remaining="$remaining" 'BEGIN { exit !(remaining > 0) }'; do
+  while [ "$remaining_ms" -gt 0 ]; do
     if [ "$RESIZE_PENDING" -eq 1 ]; then
       return
     fi
 
-    sleep_chunk=$(awk -v remaining="$remaining" 'BEGIN {
-      if (remaining > 0.1) {
-        print "0.1";
-      } else {
-        printf "%.3f", remaining;
-      }
-    }')
+    if [ "$remaining_ms" -gt 100 ]; then
+      chunk_ms=100
+    else
+      chunk_ms=$remaining_ms
+    fi
 
-    sleep "$sleep_chunk" || :
-    remaining=$(awk -v remaining="$remaining" -v chunk="$sleep_chunk" 'BEGIN {
-      next_value = remaining - chunk;
-      if (next_value < 0) {
-        next_value = 0;
-      }
-      printf "%.3f", next_value;
-    }')
+    sleep "$(printf '%d.%03d' $((chunk_ms / 1000)) $((chunk_ms % 1000)))" || :
+    remaining_ms=$((remaining_ms - chunk_ms))
   done
 }
 
@@ -1294,6 +1329,14 @@ tick_status_message() {
     STATUS_TTL=0
     STATUS_MESSAGE=""
   fi
+}
+
+tick_help_message() {
+  if [ "${HELP_TTL:-0}" -le 0 ]; then
+    return
+  fi
+
+  HELP_TTL=$((HELP_TTL - 1))
 }
 
 tty_input_available() {
@@ -1684,6 +1727,12 @@ EOF
 handle_live_keypress() {
   key="$1"
 
+  # 任何按键都把帮助行唤醒几帧：用户一动手就说明他在找操作，
+  # 这时候把按键表递过去，比让它常驻占一行更有用。
+  if [ -n "$key" ]; then
+    poke_help
+  fi
+
   case "$key" in
     k)
       perform_hotkey_kill
@@ -1697,6 +1746,24 @@ handle_live_keypress() {
       ;;
     g) TREE_FOCUS=0 ;;
     G) TREE_FOCUS=999999 ;;
+    f)
+      if [ "$TREE_FOLD" -eq 1 ]; then
+        TREE_FOLD=0
+        set_status_message "FOLD OFF: full process tree"
+      else
+        TREE_FOLD=1
+        set_status_message "FOLD ON: agents + direct children only"
+      fi
+      ;;
+    c)
+      if [ "$COMMAND_SHORT" -eq 1 ]; then
+        COMMAND_SHORT=0
+        set_status_message "CMD FULL: full command line"
+      else
+        COMMAND_SHORT=1
+        set_status_message "CMD SHORT: executable name only"
+      fi
+      ;;
     q) EXIT_REQUESTED=1 ;;
   esac
 }
@@ -2348,6 +2415,39 @@ render_panel_lines_wrapped() {
   '
 }
 
+# 实时模式的按键提示行。视图开关的状态也放在这里，
+# 因为它是常驻的：折叠/短命令一旦打开，用户必须能一眼看出当前处在哪个模式。
+# 整行长度要能塞进最小面板宽度（72 列 → 内层 68 格），否则窄终端上会把 q quit 截掉。
+# 渐进披露：帮助行不是常驻的，只在用户有操作时出现几帧，然后自己消失。
+#
+# 常驻的只有「状态」——也就是哪些视图开关正开着（[F] / [C]）。
+# 状态是用户需要**随时**知道的（否则他不知道当前看的是折叠还是全量）；
+# 按键表是用户**偶尔**需要的，常驻反而占掉一行树的空间。
+live_help_text() {
+  prefix=""
+  if [ "$TREE_FOLD" -eq 1 ]; then
+    prefix="[F]"
+  fi
+  if [ "$COMMAND_SHORT" -eq 1 ]; then
+    prefix="${prefix}[C]"
+  fi
+  if [ -n "$prefix" ]; then
+    prefix="$prefix "
+  fi
+  if [ "$HELP_TTL" -le 0 ]; then
+    # 没有操作时只留状态标记；一个开关都没开就整行留空。
+    printf '%s' "$prefix"
+    return
+  fi
+  printf '%s' "${prefix}j/u scroll  g/G  f fold  c cmd  k,k kill  Ctrl+K all  q quit"
+}
+
+# 任何按键都把帮助行重新亮起来；视图开关自己会再把 TTL 拉满，
+# 因为「我刚切了模式，得让我确认一下切有效」。
+poke_help() {
+  HELP_TTL=$HELP_TTL_FRAMES
+}
+
 render_status_line() {
   content="$1"
 
@@ -2427,7 +2527,7 @@ render_process_tree() {
     return
   fi
 
-  snapshot_lines | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v termux_prefix="/data/data/com.termux/files" -v location_map="$FRAME_LOCATION_MAP" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_hosted="$ANSI_BRIGHT_HOSTED" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" '
+  snapshot_lines | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v termux_prefix="/data/data/com.termux/files" -v location_map="$FRAME_LOCATION_MAP" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" -v fold_enabled="$TREE_FOLD" -v command_short="$COMMAND_SHORT" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
@@ -2450,13 +2550,17 @@ render_process_tree() {
     function is_agent_root(pid) {
       return kind[pid] != "" || root[comm[pid]] == 1;
     }
-    function is_tmux(pid) {
-      return comm[pid] == "tmux" || args[pid] ~ /(^|[[:space:]])tmux([[:space:]]|$)/;
-    }
+    # 往上找最近的 tmux 集线器。
+    #
+    # 判据必须和 hub_kind() 用同一个（comm == "tmux"），不能改回「参数里出现过
+    # tmux 这个词」。否则会出现这种灾难：某个 agent 的祖先是一个
+    # "sh -c tmux new-session ..." 的包装进程 —— 它被误认成 tmux，于是 agent 被
+    # 登记到它名下；可它自己 comm 是 sh，永远进不了 root_order，也就永远不会被
+    # 打印出来。结果就是 agent 在进程树里**整行消失**，而汇总行还在数它。
     function nearest_tmux(pid, parent) {
       parent = ppid[pid];
       while (parent != "" && parent != 0) {
-        if (is_tmux(parent)) return parent;
+        if (hub_kind(parent) == "tmux") return parent;
         parent = ppid[parent];
       }
       return "";
@@ -2475,34 +2579,67 @@ render_process_tree() {
       }
       return "";
     }
-    # 「被宿主管辖」的 ROLE 标注
+    # 「Agent 集线器」：自己不干活，专门托管别的 agent 的角色。
     #
-    # 决定（2026-11-04）：**不缩进，改用颜色区分**。
-    #   - 独立的 agent：ROLE 用自己的类型色（Claude 橙 / Codex 青）；
-    #   - 被宿主管辖的 agent：ROLE 用宿主的颜色（紫），标签文字仍然是 CLAUDE/CODEX，
-    #     所以「是什么」看文字，「归谁管」看颜色；
-    #   - 宿主自己那一行（T3）用同一个紫色，一行颜色就能看出归属。
-    #
-    # 为什么不用缩进表达归属：ROLE 列只有 9 格，缩进要吃掉可见宽度；
-    # 而且 tmux 下的 agent 本来就不缩进，用缩进表示「被管辖」会前后不一致
-    # —— 归属必须是一个正交的信号，不能和树形层级混在一起。
-    function is_hosted_agent(pid) {
-      return t3_agent_parent[pid] != "";
+    # 目前的成员是 t3 serve 和 tmux server。这一条判定是**唯一**的入口：
+    # ROLE 的方括号、树的子节点枚举、以及「没有 agent 子进程就不显示」的规则
+    # 全部走这里。以后要加新的宿主（别的调度器、别的 session 管理器），
+    # 只需要在这个函数里加一行 —— 其它地方不用动。
+    function hub_kind(pid) {
+      if (is_t3_server(pid)) return "t3";
+      # tmux 只认 comm：root_order 也是按 comm 入列的，
+      # 两边用同一个判据，否则会出现「挂了 agent 但没有对应标题行」的行。
+      if (comm[pid] == "tmux") return "tmux";
+      return "";
     }
-    function role_label(root_kind, depth, pid) {
+    function is_hub(pid) {
+      return hub_kind(pid) != "";
+    }
+    # 「是不是某个集线器的成员」。
+    #
+    # 用登记表查，而不是沿递归传状态：成员关系在 END 阶段就已经定好了，
+    # 直接问「这个 pid 挂在哪个集线器名下」比把标志一路传下去更简单，
+    # 也不会因为某条分支忘了转发而丢标记。child 行不查这个 —— 用户决定
+    # 只给 agent 行加标记，子进程行保持原样。
+    function is_hub_member(pid) {
+      return t3_agent_parent[pid] != "" || tmux_agent_parent[pid] != "";
+    }
+    # ROLE 字段的标注与配色
+    #
+    # 决定（2026-11-04，用户指令）：**颜色只表示类型，归属交给树形层级**。
+    #   - Claude：橙色；Codex：青色；子进程/集线器：默认色；
+    #   - 集线器（t3 / tmux）那一行：标签带方括号（[T3] / [TMUX]）且不着色 ——
+    #     它是它下面那批 agent 的**标题**，标题不需要抢戏；
+    #   - 集线器下面的 agent：标签前面缩进一格（一个空格），
+    #     这样「组内成员」和「组外独立 agent」一眼可分；它们的 child 行不变。
+    #
+    # 为什么缩进用空格而不是 "*" 或 "·"：
+    #   ROLE 列本来就用空格表达层级（"  child" 是两格缩进），
+    #   再加一种符号等于引入第二套视觉语言；而 "·" 是多字节字符，
+    #   gawk 的 length() 在 C locale 下按字节数（"·" 算成 2），
+    #   一旦环境没有 UTF-8 locale，sprintf("%-9s") 补出来的格数就会少，整行错位。
+    #   空格既是原有语言，又没有宽度前提依赖。
+    function role_label(root_kind, depth, pid,    base) {
       if (kind[pid] != "") {
-        return toupper(kind[pid]);
-      }
-      if (depth == 0) {
-        if (root_kind == "claude") {
-          return "CLAUDE";
+        base = toupper(kind[pid]);
+        if (is_hub_member(pid)) {
+          base = " " base;
         }
-        if (root_kind == "codex") {
-          return "CODEX";
+      } else if (depth == 0) {
+        if (is_hub(pid)) {
+          # 集线器自己的方括号由 hub_kind 统一决定，加宿主只改一处。
+          base = "[" toupper(hub_kind(pid)) "]";
+        } else if (root_kind == "claude") {
+          base = "CLAUDE";
+        } else if (root_kind == "codex") {
+          base = "CODEX";
+        } else {
+          base = toupper(root_kind);
         }
-        return toupper(root_kind);
+      } else {
+        base = "  child";
       }
-      return "  child";
+      return base;
     }
     function short_args(text, max_len) {
       if (max_len < 1) {
@@ -2587,14 +2724,14 @@ render_process_tree() {
       }
       return ansi_green;
     }
-    # ROLE 字段的颜色：归属靠颜色，不靠缩进。
-    # 宿主管辖的 agent 和宿主自己那一行都用宿主色，一眼看得出谁管谁。
+    # ROLE 字段的颜色：只表示类型，不表示归属。
+    # T3 那一行故意不着色：它是标题，标题不需要抢戏。
     function role_color(root_kind, pid) {
       if (style_enabled != 1) {
         return "";
       }
-      if (is_hosted_agent(pid) || is_t3_server(pid)) {
-        return ansi_hosted;
+      if (is_hub(pid)) {
+        return "";
       }
       if (root_kind == "claude") {
         return ansi_claude;
@@ -2646,6 +2783,8 @@ render_process_tree() {
       return compact_path_prefix(text, termux_prefix, "~/..");
     }
     BEGIN {
+      # 折叠基准初始为 -1：还没进入任何基准点时，折叠不生效。
+      fold_base_depth = -1;
       root_name_count = split(root_list, root_names, " ");
       for (i = 1; i <= root_name_count; i++) {
         root[root_names[i]] = 1;
@@ -2700,7 +2839,28 @@ render_process_tree() {
         }
       }
     }
+    function short_command_text(pid,    parts, n, prog) {
+      # 「只显示可执行名」模式。
+      #
+      # agent 直接给程序名（claude / codex）：在 Termux 上 argv[0] 往往是
+      # 动态加载器 ld-linux-aarch64.so.1，取 basename 反而没有信息量。
+      if (kind[pid] != "") {
+        return kind[pid];
+      }
+      n = split(args[pid], parts, " ");
+      prog = parts[1];
+      if (prog == "") {
+        return "";
+      }
+      sub(/^.*\//, "", prog);
+      return prog;
+    }
     function print_node(pid, depth, root_kind, prefix, child_ids, n, i, child_pid, summary) {
+      # 折叠基准：根节点和每个 agent 都是基准点。
+      # 折叠模式下只画「基准 + 基准的直接子进程」，更深的后代不画。
+      if (depth == 0 || kind[pid] != "") {
+        fold_base_depth = depth;
+      }
       prefix = "";
       for (i = 0; i < depth; i++) {
         prefix = prefix "  ";
@@ -2708,11 +2868,15 @@ render_process_tree() {
       if (depth > 0) {
         prefix = prefix "|- ";
       }
-      command_text = prefix compact_home_path(args[pid]);
+      if (command_short == 1) {
+        command_text = prefix short_command_text(pid);
+      } else {
+        command_text = prefix compact_home_path(args[pid]);
+      }
       summary = short_args(command_text, command_width);
       mem_percent = safe_percent(rss[pid], mem_total_kb);
       if (depth == 0) {
-        root_kind = (kind[pid] != "" ? kind[pid] : (is_t3_server(pid) ? "t3" : comm[pid]));
+        root_kind = (kind[pid] != "" ? kind[pid] : (is_hub(pid) ? hub_kind(pid) : comm[pid]));
       }
       location_text = "";
       if (depth == 0 || kind[pid] != "") {
@@ -2734,23 +2898,23 @@ render_process_tree() {
         command_width,
         summary;
 
-      if (is_tmux(pid)) {
+      if (is_hub(pid)) {
+        # 集线器的成员不由进程树决定，而由「谁登记在它名下」决定：
+        # t3 托管的 agent 走 t3_agent_parent，tmux 里的走 tmux_agent_parent。
+        # 两者不会同时命中（t3 名下的 agent 不再参与 tmux 分组）。
         for (i = 1; i <= root_pid_count; i++) {
           child_pid = root_order[i];
-          if (tmux_agent_parent[child_pid] == pid && !printed[child_pid]) {
-            printed[child_pid] = 1;
-            print_node(child_pid, depth + 1, kind[child_pid]);
-          }
-        }
-      } else if (is_t3_server(pid)) {
-        for (i = 1; i <= root_pid_count; i++) {
-          child_pid = root_order[i];
-          if (t3_agent_parent[child_pid] == pid && !printed[child_pid]) {
+          if (printed[child_pid]) continue;
+          if (t3_agent_parent[child_pid] == pid || tmux_agent_parent[child_pid] == pid) {
             printed[child_pid] = 1;
             print_node(child_pid, depth + 1, kind[child_pid]);
           }
         }
       } else {
+        # 折叠模式：已经越过基准点就不再往下画。
+        if (fold_enabled == 1 && fold_base_depth >= 0 && depth > fold_base_depth) {
+          return;
+        }
         n = split(children[pid], child_ids, " ");
         for (i = 1; i <= n; i++) {
           child_pid = child_ids[i];
@@ -2780,7 +2944,7 @@ render_process_tree() {
       kind[pid_val] = agent_kind_for(comm_val, args_val);
       children[ppid_val] = children[ppid_val] " " pid_val;
 
-      if (kind[pid_val] != "" || root[comm_val] || comm_val == "tmux" || is_t3_server(pid_val)) {
+      if (kind[pid_val] != "" || root[comm_val] || is_hub(pid_val)) {
         root_order[++root_pid_count] = pid_val;
       }
     }
@@ -2817,10 +2981,8 @@ render_process_tree() {
         if (kind[pid_val] == "" && !tmux_display[pid_val] && !t3_display[pid_val] && !root[comm[pid_val]]) continue;
         if (!printed[pid_val]) {
           printed[pid_val] = 1;
-          if (t3_display[pid_val]) {
-            print_node(pid_val, 0, "t3");
-          } else if (tmux_display[pid_val]) {
-            print_node(pid_val, 0, "tmux");
+          if (t3_display[pid_val] || tmux_display[pid_val]) {
+            print_node(pid_val, 0, hub_kind(pid_val));
           } else {
             print_node(pid_val, 0, kind[pid_val] != "" ? kind[pid_val] : comm[pid_val]);
           }
@@ -2950,7 +3112,12 @@ ${summary_part}"
   if [ -n "$STATUS_MESSAGE" ]; then
     render_status_line "$STATUS_MESSAGE"
   elif [ "$RUN_ONCE" -eq 0 ]; then
-    render_status_line 'j/u: scroll  g/G: top/bottom  k,k: kill-one  Ctrl+K: kill-all  q: quit'
+    hint=$(live_help_text)
+    # 渐进披露：帮助行只在有内容时占用一行；空的时候整行不画，
+    # 省下来的那一行留给进程树。
+    if [ -n "$hint" ]; then
+      render_status_line "$hint"
+    fi
   fi
   if [ "$STYLE_ENABLED" -eq 0 ]; then
     render_plain_header_line
@@ -3068,7 +3235,9 @@ run_loop() {
 
     process_live_input
     if [ "$EXIT_REQUESTED" -eq 1 ]; then break; fi
+    frame_started_ms=$(now_ms)
     current_frame=$(run_once)
+    frame_elapsed_ms=$(( $(now_ms) - frame_started_ms ))
     if [ "$PROCESS_LOCATION_WIDTH" -ne "$previous_location_width" ]; then
       PREVIOUS_FRAME=""
     fi
@@ -3078,12 +3247,15 @@ run_loop() {
     render_frame_diff "$PREVIOUS_FRAME" "$current_frame"
     PREVIOUS_FRAME=$current_frame
     tick_status_message
+    tick_help_message
 
     if [ "$TEST_CYCLES" -gt 0 ] && [ "$LOOP_ITERATION" -ge "$TEST_CYCLES" ]; then
       break
     fi
 
-    sleep_until_refresh "$INTERVAL_SECONDS"
+    # 补帧：这一帧渲染花了 frame_elapsed_ms，就只补剩下的那部分，
+    # 让「一帧到下一帧」稳定落在名义间隔上。
+    sleep_until_refresh "$INTERVAL_SECONDS" "$frame_elapsed_ms"
   done
 }
 

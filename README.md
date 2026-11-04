@@ -57,11 +57,17 @@ Live mode refreshes once per second by default, switches to the terminal's alter
 While live mode is running:
 
 - press `j` / `u` (or Down / Up) to move the process-tree focus through all visible agent descendants; `g` / `G` jump to the top / bottom
+- press `f` to fold the tree: each agent shows only itself and its direct children, deeper descendants are hidden
+- press `c` to shorten the `COMMAND` column to the executable name instead of the full command line
 - press `k` once to arm the highest-CPU non-root child, then again within five seconds to `SIGKILL` that same eligible process
 - press `Ctrl+K` to `SIGKILL` all non-root child processes under the configured agent roots
 - press `q` to leave the live view
 
 The summary stays pinned while the process tree scrolls; tmux rows appear only when they lead to agents, and unrelated tmux branches remain hidden. Root `claude`/`codex` processes are never selected by either kill hotkey. `Ctrl+K` remains immediate; use it deliberately.
+
+The key list is disclosed on demand rather than pinned to the screen: it appears for a few frames whenever you press a key and then fades out, leaving the row free for the process tree. What stays visible is the *state*, not the manual — an active view mode is shown as `[F]` (folding on) and/or `[C]` (short commands on), so you always know which view you are looking at even after the key list has faded.
+
+The refresh interval is a *frame period*, not a sleep length: the monitor measures how long the frame took to render and sleeps only the remainder. A frame that already exceeds the interval starts the next one immediately, so `--interval 1` means one frame per second rather than one second plus the render time.
 
 Change refresh interval:
 
@@ -123,6 +129,20 @@ The ANSI resource-bar rules and review checklist live in `docs/ansi-rendering-co
 
 The process table compacts paths under Termux's `files` directory (`/data/data/com.termux/files/usr/bin/node` becomes `~/../usr/bin/node`). Child roles use a fixed two-space indent. One shared `LOCATION` width is sized from the longest detected Git branch plus five characters, allowing shorter branches to use that same available width; long directory suffixes are truncated with `..`, while short values remain whole. The longest non-Git directory name also informs the width, while preserving command space on narrow terminals.
 
-T3 Code runs its own Claude and Codex provider processes underneath `t3 serve`. Those Agents are tracked and presented as a subtree rather than as loose roots: `t3 serve` is rendered as its own `T3` row, and the Agents it hosts appear beneath it. Attribution is carried by **color, not by indentation**: an Agent that a host manages wears the host color (violet), while an Agent you started yourself keeps its own type color (orange for Claude, cyan for Codex). The `ROLE` label still spells out `CLAUDE` / `CODEX`, so color answers "who manages this" and the label answers "what is this" — two orthogonal signals, neither of which steals visible width from the nine-cell `ROLE` column.
+Some processes do not do work themselves — they are **Agent hubs** that host other Agents. T3 Code is one (`t3 serve` runs its own Claude and Codex provider processes); a tmux server is another. Both are rendered as a section title and the Agents they host are grouped underneath.
 
-A tmux session is rendered only when it has Claude/Codex children of its own. A tmux that merely hosts the T3 server has none — its Agents belong to the `T3` row — so that session is not shown, and the `T3` row stands on its own. Empty sessions carry no information and would only take up tree space. The fixture for this contract is `tests/test_t3_managed_agents.sh`.
+Three orthogonal signals carry the whole structure:
+
+| Signal | Answers | How |
+|---|---|---|
+| Color | what is this? | orange for Claude, cyan for Codex; hubs and `child` rows stay uncolored |
+| Brackets | is this a group? | a hub's `ROLE` is wrapped — `[T3]`, `[TMUX]` — and left uncolored, because a title should not compete with the Agents it hosts |
+| Indent | who does it belong to? | an Agent under a hub is indented one cell (` CLAUDE`); `child` rows are unaffected and keep their plain two-cell indent |
+
+Keeping those three separate is the point. Earlier revisions tried to encode "who manages this" with color, which forced a fourth color into the palette and made an Agent's own identity depend on its host; the indent is also what distinguishes a hub's members from a standalone Agent that happens to be rendered right after the group.
+
+The indent is a plain ASCII space, not a bullet glyph. `·` is multibyte, and `gawk` counts `length()` in *bytes* under the C locale — one missing UTF-8 locale and `sprintf("%-9s")` pads the nine-cell `ROLE` column short, shifting everything to its right. A space is the same visual language the `child` rows already use, and it has no locale prerequisite.
+
+A tmux session is rendered only when it has Claude/Codex children of its own. A tmux that merely hosts the T3 server has none — its Agents belong to the `T3` row — so that session is not shown, and the `[T3]` title stands on its own. Empty sessions carry no information and would only take up tree space. The fixture for this contract is `tests/test_t3_managed_agents.sh`.
+
+"Which processes are hubs" lives in one place, the `hub_kind()` function. Both the bracketed title and the tree's child enumeration read from it, so adding another host kind is a one-line change there rather than a new branch in every renderer. Keeping the *ancestor* search on the same predicate matters too: an earlier revision walked upwards looking for anything whose arguments merely mentioned `tmux`, which matched `sh -c tmux new-session ...` wrapper processes. An Agent under such a wrapper was registered to a PID that is never itself rendered — so the Agent vanished from the tree entirely while still being counted in the summary.

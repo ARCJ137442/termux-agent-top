@@ -49,20 +49,51 @@ The `ROLE` column of the process tree is a fixed nine-cell field rendered as:
 Role field          = Color + 9 visible cells + Reset
 ```
 
-- Color carries **attribution**, the label carries **identity**:
-  - an Agent started by the user keeps its type color — `ClaudeColor` for
-    Claude, `CodexColor` for Codex;
-  - an Agent managed by a host (for example a T3 Code server) wears the
-    **host color**, and the host's own row wears that same color, so a group
-    reads as one color block.
-- The color code sits immediately before the label; no indentation is used to
-  mark attribution. The `ROLE` column is only nine cells wide, and the
-  `child` rows already spend two of them on an indent — spending more of the
-  column on attribution would fight the tree hierarchy for the same space.
-- The nine-cell width is a hard limit: `CLAUDE` uses six cells and `CODEX`
-  uses five; the padding to nine is what keeps the following columns aligned.
+Three signals share this one column, and each answers exactly one question:
+
+| Signal | Question | Rule |
+|---|---|---|
+| Color | what is this? | `ClaudeColor` for Claude, `CodexColor` for Codex, none otherwise |
+| Brackets | is this a group? | a hub row's label is `[T3]` / `[TMUX]` and carries **no** color |
+| Indent | who owns it? | an Agent under a hub gets one leading space; `child` rows are unaffected |
+
+- Color is **type only**. It must not encode attribution: an Agent hosted by
+  T3 keeps its own orange/cyan, so its identity does not change with its host.
+  A hosted Agent and a standalone one of the same type are the same color by
+  design — the indent, not the color, separates them.
+- A hub row is a section title. It is deliberately uncolored so it does not
+  compete with the Agents beneath it, and the brackets are what say "a group
+  starts here".
+- The indent is a single ASCII space. It must stay single-byte: `gawk`'s
+  `length()` counts **bytes** under the C locale, so a multibyte marker (`·`)
+  makes `sprintf("%-9s")` pad the field short and shifts every column to its
+  right. See the width note below.
+- The nine-cell width is a hard limit: `*CLAUDE`-style prefixes are gone, and
+  the longest label in use is `[TMUX]` at six cells, so no label may exceed
+  nine. The padding to nine is what keeps the following columns aligned.
 - The process tree is the only place where the `ROLE` field appears; the
   resource bars never carry one.
+
+### Width is a locale-dependent property
+
+`length()`, `substr()` and `sprintf("%-*s")` in `gawk` measure **characters**
+under a UTF-8 locale and **bytes** under the C locale. The `ROLE` field depends
+on this because it is padded to a fixed cell count, as do the resource bars
+inside `render_panel_lines_wrapped()`.
+
+Verified on this device:
+
+```text
+$ awk 'BEGIN { printf "[%-9s]\n", "\302\267CLAUDE" }'              # UTF-8 locale
+[·CLAUDE  ]          # 9 visible cells — correct
+$ LC_ALL=C awk 'BEGIN { printf "[%-9s]\n", "\302\267CLAUDE" }'
+[·CLAUDE ]           # length("\302\267CLAUDE") == 8 — one cell short
+```
+
+The current implementation avoids the problem by using single-byte ASCII for
+the indent. The bars (`█`, `░`) are still multibyte, so a C-locale run can
+still under-pad a wrapped panel line — that remains an open defect rather than
+a solved one.
 
 ## Root-Cause Review
 
@@ -114,9 +145,11 @@ The repeated presentation failures came from five concrete process defects:
 | Plain mode | no CSI/ANSI sequences |
 | Visible width | styled and plain lines have equal visible width |
 | No rejected path | no white-on-green marker codes |
-| Host-managed role | host color immediately before the label, no indent |
-| Unmanaged role | type color immediately before the label |
-| Host row (`T3`) | the same host color as the Agents it manages |
+| Hub title | bracketed label (`[T3]` / `[TMUX]`) with no color code before it |
+| Hosted Agent | its own type color, then exactly one indent space before the label |
+| Standalone Agent | its own type color, then the label with no indent |
+| Child row | plain two-cell indent, unaffected by hub membership |
+| Retired host color | the violet host color must not reappear |
 
 The executable regression suite is `tests/test_ansi_rendering.sh`; the broader
 resource and dashboard suites remain required as well.
@@ -143,9 +176,19 @@ is independent from the subsequent green fill reset. This closes the specific
 white-text regression and the earlier black-fill regression without changing
 the intended color distinction between Claude, Codex, other, and idle.
 
-As of 2026-11-04, the `ROLE` field follows the protocol above: a nine-cell
-field where the color states the attribution — type color for an Agent the
-user started, host color for an Agent a host manages — and the label states
-the identity. The byte-order assertions live in
-`tests/test_ansi_rendering.sh`; the grouping contract itself is pinned by
-`tests/test_t3_managed_agents.sh`.
+As of 2026-11-04, the `ROLE` field follows the three-signal protocol above:
+type color, bracketed hub titles, and a one-cell indent for hosted Agents.
+The byte-order assertions live in `tests/test_ansi_rendering.sh`; the grouping
+contract itself is pinned by `tests/test_t3_managed_agents.sh`.
+
+A related rendering defect was fixed in the same revision and is worth
+recording, because it is a *class* of bug rather than a typo: the frame
+clipper located the process-table header with `/^PID[[:space:]]+PPID/`, but
+under `CODEX_TOP_FORCE_STYLE=1` (and therefore in every live frame) that
+header is prefixed with `ESC[7m`. The probe never matched, the clipper took
+its "no header found" fallback, and `clamp_tree_focus` pinned the focus to
+zero — the entire `j`/`u`/`g`/`G` scroll feature was dead in the only mode
+users actually run. **Any regex used as a structural probe over a styled
+frame must strip CSI sequences first.** The regression is pinned in
+`tests/test_live_navigation.sh`, which asserts the styled path explicitly;
+both assertions were confirmed to fail against the pre-fix source.
