@@ -68,9 +68,59 @@ next frame boundary.
 Measured on this device with `--interval 5`:
 
 ```text
-keypress-to-exit   4.48 s  ->  0.04 s
+quit latency (q)   4.48 s  ->  0.04 s
 idle CPU           0.9%    ->  0.2% of one core
 ```
+
+That 0.04 s is **quit only**, because `q` breaks before `run_once`. Ordinary
+keys still pay a full frame rebuild before anything changes on screen; see the
+next section.
+
+## Key Handling and Refresh Are One Path
+
+Every key follows the same contract:
+
+```text
+read key -> handle_live_keypress -> rebuild the frame (run_once) -> render
+```
+
+A key never renders a frame of its own, and no key is special-cased into a
+"fast path". `q` is not an exception to the rule: its *handling* is "request
+exit", so there is no refresh to wait for. That is why it can be 30 ms while
+`j` is not.
+
+The consequence is worth stating plainly, because it is easy to misread a
+latency measurement: ending the idle wait early does not make the screen move.
+It only removes the *remaining interval*. The floor is the rebuild:
+
+```text
+--once (cold, all external commands)   2.0-2.3 s
+key -> first byte, while idle          0.7-1.6 s (load-dependent)
+```
+
+If a key arrives *during* `run_once`, it queues in the tty buffer and is
+handled at the next loop top. Do not "fix" that by rendering a frame composed
+before the key was handled: that frame would show the old state and the user
+would see two refreshes for one keypress.
+
+## Hotkey Target Naming
+
+The label shown in `ARMED: ... kill <name>[<pid>]` must come from
+`display_name()` in both hotkey awk programs (single-target and Ctrl+K list).
+It returns the agent kind, else the basename of `argv[0]`, else `comm`.
+
+Never use `comm` for this label on Android: `comm` is the first 15 characters
+of `argv[0]`, so any process started by absolute path is displayed as
+`/data/data/com.`. The user is being asked to confirm an irreversible
+`SIGKILL`; a truncated path fragment is not a confirmation.
+
+`is_armed_target_eligible()` compares against the same emitted field, so the
+two awk programs must produce the identical name. If they diverge, the second
+`k` is silently rejected and the display re-arms with text that looks unchanged
+under diff rendering.
+
+Regression: `tests/test_hotkey_target_label.sh` (it also asserts the old
+`comm` form is no longer accepted).
 
 Two invariants must not regress:
 

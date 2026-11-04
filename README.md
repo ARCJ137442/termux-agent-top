@@ -69,6 +69,8 @@ The key list is disclosed on demand rather than pinned to the screen: it appears
 
 The refresh interval is a *frame period*, not a sleep length: the monitor measures how long the frame took to render and sleeps only the remainder. A frame that already exceeds the interval starts the next one immediately, so `--interval 1` means one frame per second rather than one second plus the render time.
 
+A keypress ends the idle wait immediately, but the screen changes only when the next frame has been rebuilt. On this device a rebuild costs roughly one second, so a key still takes about that long to become visible; `q` is the exception because it leaves before the rebuild.
+
 Change refresh interval:
 
 ```sh

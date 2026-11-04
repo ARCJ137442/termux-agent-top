@@ -1552,6 +1552,24 @@ select_hotkey_target() {
         }
       }
     }
+    # 热键确认文案里显示的名字。与树里「只显示可执行名」模式
+    # （short_command_text）同源：agent 用 kind，其它取 argv[0] 的 basename。
+    #
+    # 不能用 comm：Android 上 comm 是 argv[0] 的前 15 个字符，绝对路径启动
+    # 的进程一律变成 "/data/data/com."。在不可撤销的 SIGKILL 之前给用户看
+    # 一个被截断的路径片段，等于让他无法确认目标。
+    function display_name(pid,    prog) {
+      if (kind[pid] != "") {
+        return kind[pid];
+      }
+      prog = args[pid];
+      sub(/[[:space:]].*$/, "", prog);
+      sub(/^.*\//, "", prog);
+      if (prog == "") {
+        return comm[pid];
+      }
+      return prog;
+    }
     # 下面这两个函数是 k 的遍历入口，它的判据必须与 select_hotkey_targets
     # 的 emit_descendants 完全一致：
     #   - 根集合：`kind != "" || root[comm]`，不单独认 tmux；
@@ -1571,7 +1589,7 @@ select_hotkey_target() {
           found = 1;
           best_pid = pid;
           best_cpu = cpu_val;
-          best_comm = comm[pid];
+          best_label = display_name(pid);
         }
       }
 
@@ -1622,7 +1640,7 @@ select_hotkey_target() {
       }
 
       if (found) {
-        printf "%s\t%.1f\t%s\n", best_pid, best_cpu, best_comm;
+        printf "%s\t%.1f\t%s\n", best_pid, best_cpu, best_label;
       }
     }
   '
@@ -1681,6 +1699,21 @@ select_hotkey_targets() {
         }
       }
     }
+    # 与 select_hotkey_target 的同名函数保持一字不差：k 的单目标确认和
+    # Ctrl+K 的批量名单必须用同一个名字来源，否则资格校验会把一个其实
+    # 合法的目标判成「已变化」。见 display_name 的注释。
+    function display_name(pid,    prog) {
+      if (kind[pid] != "") {
+        return kind[pid];
+      }
+      prog = args[pid];
+      sub(/[[:space:]].*$/, "", prog);
+      sub(/^.*\//, "", prog);
+      if (prog == "") {
+        return comm[pid];
+      }
+      return prog;
+    }
     function emit_descendants(pid, depth, child_ids, n, i, child_pid) {
       if (hidden[pid]) {
         return;
@@ -1697,7 +1730,7 @@ select_hotkey_targets() {
 
       if (depth > 0 && !is_agent_root(pid)) {
         printed[pid] = 1;
-        printf "%s\t%s\n", pid, comm[pid];
+        printf "%s\t%s\n", pid, display_name(pid);
       }
 
       n = split(children[pid], child_ids, " ");
@@ -1724,6 +1757,7 @@ select_hotkey_targets() {
       pid[pid_val] = pid_val;
       ppid[pid_val] = ppid_val;
       comm[pid_val] = comm_val;
+      args[pid_val] = args_val;
       kind[pid_val] = agent_kind_for(comm_val, args_val);
       children[ppid_val] = children[ppid_val] " " pid_val;
 
@@ -3409,6 +3443,9 @@ run_loop() {
       RESIZE_PENDING=0
     fi
 
+    # 所有按键走同一条路：处理 → 重建一帧 → 渲染。按键不单独出帧，也没有
+    # 「快速通道」。q 不是例外 —— 它的处理是「请求退出」，所以没有需要等待
+    # 的刷新；这才是它 30ms 而 j 不是的原因，而不是它被特殊照顾。
     process_live_input
     if [ "$EXIT_REQUESTED" -eq 1 ]; then break; fi
     frame_started_ms=$(now_ms)
