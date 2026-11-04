@@ -248,6 +248,13 @@ process_snapshot() {
   if [ -n "$TEST_PS_LOG" ]; then
     printf '%s\n' snapshot >>"$TEST_PS_LOG"
   fi
+  # ── 注意：夹具与实况用的是**两套列契约** ──────────────────────────────────
+  # 实况（下面的 ps 分支）：7 列，第 5 列是 stat，直接透传。
+  # 夹具（本分支）：6 列 —— `pid ppid rss pcpu comm args...`，
+  #   stat 由这里合成一个 "S"。
+  # 拿 ps 的 7 列输出当夹具喂进来，第 5 列（stat，形如 `S<s`）会被当成
+  # comm，下游一切按 comm 做的判断都会错 —— 而且错得很像被测代码的 bug。
+  # 生成夹具请用：ps -ww -eo pid=,ppid=,rss=,pcpu=,comm=,args=
   if [ -n "$TEST_PS_FILE" ]; then
     awk '{
       pid = $1; parent = $2; rss = $3; cpu = $4; command = $5
@@ -1468,12 +1475,20 @@ select_hotkey_target() {
         }
       }
     }
+    # 下面这两个函数是 k 的遍历入口，它的判据必须与 select_hotkey_targets
+    # 的 emit_descendants 完全一致：
+    #   - 根集合：`kind != "" || root[comm]`，不单独认 tmux；
+    #   - 子孙：排除 agent 根本身（嵌套的 claude/codex 不该被当作可杀目标）。
+    # 两边一旦分歧，k 就会选中一个 Ctrl+K 名单里没有的目标，真杀前的闸门
+    # is_armed_target_eligible 会拒绝它并重新武装 —— 用户看到的是
+    # 「按 k 武装了，再按 k 毫无反应，提示一字不变」。回归见
+    # tests/test_hotkey_eligibility.sh，那条测试钉的是不变式本身而不是形态。
     function scan_descendants(pid, depth, child_ids, n, i, child_pid, cpu_val) {
       if (hidden[pid]) {
         return;
       }
 
-      if (depth > 0) {
+      if (depth > 0 && !is_agent_root(pid)) {
         cpu_val = cpu[pid] + 0;
         if (!found || cpu_val > best_cpu) {
           found = 1;
@@ -1514,7 +1529,7 @@ select_hotkey_target() {
       kind[pid_val] = agent_kind_for(comm_val, args_val);
       children[ppid_val] = children[ppid_val] " " pid_val;
 
-      if (kind[pid_val] != "" || root[comm_val] || comm_val == "tmux") {
+      if (kind[pid_val] != "" || root[comm_val]) {
         root_order[++root_pid_count] = pid_val;
       }
     }
@@ -1594,7 +1609,17 @@ select_hotkey_targets() {
         return;
       }
 
+      # 同一个进程可能同时挂在多条根路径下 —— 嵌套 agent 根就会这样：
+      # 它的子孙既从外层根的遍历到达，又从它自己作为根的遍历到达。
+      # 打印过一次就整棵子树都不用再看，因为第一次遍历已经走完了。
+      # 不去重会让 Ctrl+K 的报数虚高（同一个 PID 被 kill 两次，第二次
+      # 通常仍返回 0，于是显示「KILLED ALL 3」而实际只杀了 2 个）。
+      if (printed[pid]) {
+        return;
+      }
+
       if (depth > 0 && !is_agent_root(pid)) {
+        printed[pid] = 1;
         printf "%s\t%s\n", pid, comm[pid];
       }
 
