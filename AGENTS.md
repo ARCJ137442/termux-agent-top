@@ -48,6 +48,41 @@ Regression: `tests/test_awk_data_channel.sh`. It asserts both the concrete
 handlers and the class — a grep guard fails the build if a data variable
 reappears on `-v`.
 
+## Live Input and Frame Pacing
+
+`/bin/sh` on this device is dash 0.5.12, which has no `read -t`. Do not work
+around that with a busy poll: polling costs one fork per 100 ms while idle.
+
+The wait between frames is a **blocking read carrying a kernel timeout**:
+
+```sh
+stty -icanon -echo min 0 time <deciseconds> </dev/tty
+key=$(dd bs=1 count=1 if=/dev/tty)
+```
+
+`min 0 time N` makes `read(2)` return 0 after N×0.1 s with no input, and `dd`
+treats that as EOF; with input, `read(2)` returns at once. One process covers a
+whole idle slice, and a keypress ends the wait immediately instead of at the
+next frame boundary.
+
+Measured on this device with `--interval 5`:
+
+```text
+keypress-to-exit   4.48 s  ->  0.04 s
+idle CPU           0.9%    ->  0.2% of one core
+```
+
+Two invariants must not regress:
+
+- `read_live_keypress()` re-applies `min 0 time 0` before its non-blocking read.
+  A trapped signal can interrupt the blocking wait before its restore runs, and
+  a termios left on `time N` would silently stall the next frame.
+- `KEY_WAIT_SLICE_MS` is the resize response time, not the refresh rate. The
+  `WINCH` trap only runs once the current foreground command finishes, so a
+  single block covering the whole interval would delay resizes.
+
+Regression: `tests/test_live_wait.sh`.
+
 ## Required Verification
 
 Run the focused ANSI test first, then the complete suite:

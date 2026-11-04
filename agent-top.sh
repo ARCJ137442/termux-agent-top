@@ -2,6 +2,9 @@
 set -eu
 
 INTERVAL_SECONDS=1
+# 空闲等键时单次阻塞的上限（毫秒）。它不是刷新周期，而是「多久检查一次
+# resize」的上限；见 sleep_until_refresh() 里的说明。
+KEY_WAIT_SLICE_MS=1000
 FPS_LABEL=""
 RUN_ONCE=0
 SUMMARY_ONLY=0
@@ -50,6 +53,9 @@ STYLE_ENABLED=0
 RESIZE_PENDING=0
 TTY_INPUT_READY=0
 TTY_STATE=""
+# 等待期间读到的按键。sleep_until_refresh() 写入，process_live_input() 消费。
+# 这样按键不必等到下一帧才被看见：等待一被打断就立刻渲染。
+WAIT_KEY=""
 STATUS_MESSAGE=""
 STATUS_TTL=0
 STATUS_TTL_FRAMES=3
@@ -1328,6 +1334,7 @@ sleep_until_refresh() {
   # 渲染本身要花时间，固定 sleep 会把实际刷新周期拉长成
   # 「interval + 渲染耗时」—— 名义 1 Hz 的东西实际只有 0.4 Hz。
   remaining_ms=$((INTERVAL_MS - elapsed_ms))
+  WAIT_KEY=""
   if [ "$remaining_ms" -le 0 ]; then
     # 这一帧已经超过名义间隔：不再补睡，立刻进入下一帧。
     return
@@ -1338,13 +1345,31 @@ sleep_until_refresh() {
       return
     fi
 
-    if [ "$remaining_ms" -gt 100 ]; then
-      chunk_ms=100
+    if [ "$remaining_ms" -gt "$KEY_WAIT_SLICE_MS" ]; then
+      chunk_ms=$KEY_WAIT_SLICE_MS
     else
       chunk_ms=$remaining_ms
     fi
 
-    sleep "$(printf '%d.%03d' $((chunk_ms / 1000)) $((chunk_ms % 1000)))" || :
+    # 这一段不是「睡」，而是「最多等 chunk_ms，按键立即返回」。
+    #
+    # 刷新周期和按键延迟本来是同一个数——每帧只读一次键，于是空闲时
+    # 刷新放慢多少，按键就跟慢多少。把超时交给内核之后两者解耦：
+    # 空闲时仍然只按 interval 刷新，但按键一到，read(2) 立刻返回，
+    # 循环马上渲染下一帧。所以不需要「按键后加速一段时间」这种补丁，
+    # 也不需要把帧率整体调高。
+    #
+    # 为什么分片：WINCH 的 trap 只有在当前前台命令结束时才会跑，
+    # 一次阻塞整个 interval 会让 resize 拖到最后。chunk 上限
+    # KEY_WAIT_SLICE_MS 就是 resize 的最迟响应时间。
+    if [ "$TTY_INPUT_READY" -eq 1 ]; then
+      WAIT_KEY=$(read_live_keypress_wait "$chunk_ms")
+      if [ -n "$WAIT_KEY" ]; then
+        return
+      fi
+    else
+      sleep "$(printf '%d.%03d' $((chunk_ms / 1000)) $((chunk_ms % 1000)))" || :
+    fi
     remaining_ms=$((remaining_ms - chunk_ms))
   done
 }
@@ -1404,10 +1429,60 @@ restore_live_input() {
   TTY_STATE=""
 }
 
+# 把毫秒换算成 stty 的 time 单位（0.1 秒），向上取整并夹在 1..255。
+# 单独抽出来是为了可测：这个换算错了，现象是「按键要等 0.1 秒」或者
+# 「等待时间差一个数量级」，两种都很难从屏幕上看出来。
+# 结果写进 KEY_WAIT_DS，不用 $(...) —— 每个等待片里多一次子 shell 不值得。
+key_wait_deciseconds() {
+  KEY_WAIT_DS=$(( ($1 + 99) / 100 ))
+  if [ "$KEY_WAIT_DS" -lt 1 ]; then
+    KEY_WAIT_DS=1
+  fi
+  if [ "$KEY_WAIT_DS" -gt 255 ]; then
+    KEY_WAIT_DS=255
+  fi
+}
+
+# 阻塞等待一次按键，最多 wait_ms 毫秒。
+#
+# 为什么不用 `read -t`：本机 /bin/sh 是 dash 0.5.12，没有 -t。
+# 为什么不用「每 100ms 轮询一次 dd」：轮询是拿 CPU 换延迟，空闲时每秒要起
+# 十个进程（实测 dd 与 sleep 各约 5–6 ms）。这里把超时交给内核：
+# `stty min 0 time N` 让 read(2) 在 N×0.1 秒没有输入时返回 0，dd 把它当
+# EOF 退出；有输入时 read(2) 立刻返回。于是一整段空闲只花一次进程。
+read_live_keypress_wait() {
+  wait_ms="$1"
+  key_wait_deciseconds "$wait_ms"
+
+  stty -icanon -echo min 0 time "$KEY_WAIT_DS" </dev/tty 2>/dev/null || :
+  key=$(dd bs=1 count=1 if=/dev/tty 2>/dev/null || :)
+
+  # 立刻恢复非阻塞。等待可能被 WINCH 打断，那时代码走不到这一行，
+  # 所以 read_live_keypress() 自己也会再设一次——两处都要有。
+  stty -icanon -echo min 0 time 0 </dev/tty 2>/dev/null || :
+
+  if [ -z "$key" ]; then
+    return
+  fi
+
+  if [ "$key" = "$(printf '\033')" ]; then
+    # 方向键是 ESC[A / ESC[B 这样的多字节序列：首字节已经读到，
+    # 其余字节通常和它一起到达缓冲区，用非阻塞读补。
+    tail=$(dd bs=1 count=2 iflag=nonblock if=/dev/tty 2>/dev/null || :)
+    printf '%s%s' "$key" "$tail"
+  else
+    printf '%s' "$key"
+  fi
+}
+
 read_live_keypress() {
   if [ "$TTY_INPUT_READY" -ne 1 ]; then
     return
   fi
+
+  # 上一次等待可能被信号打断，termios 还停在 `min 0 time N` 上；
+  # 不重置的话这里会意外阻塞近一整秒。
+  stty -icanon -echo min 0 time 0 </dev/tty 2>/dev/null || :
 
   key=$(dd bs=1 count=1 iflag=nonblock if=/dev/tty 2>/dev/null || :)
   if [ "$key" = "$(printf '\033')" ]; then
@@ -1859,7 +1934,14 @@ handle_live_keypress() {
 }
 
 process_live_input() {
-  key=$(read_live_keypress)
+  # 等待期间读到的键优先：它是 sleep_until_refresh() 打断等待带回来的，
+  # 用户按下的时刻可能比这一帧开始还早，先处理它。
+  if [ -n "$WAIT_KEY" ]; then
+    key=$WAIT_KEY
+    WAIT_KEY=""
+  else
+    key=$(read_live_keypress)
+  fi
   if [ -n "$key" ]; then
     handle_live_keypress "$key"
   fi
