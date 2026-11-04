@@ -17,6 +17,37 @@ fixture-driven, and compatible with the commands listed in `README.md`.
 - Any ANSI change must update or extend `docs/ansi-rendering-contract.md` and
   `tests/test_ansi_rendering.sh` with exact byte-order assertions.
 
+## Shell ↔ awk Data Channel
+
+`-v` carries **configuration**: numbers and fixed constants the script itself
+composes. Data — process argv, directory names, branch names, whole frame
+text — must go through the environment instead:
+
+```sh
+ATD_X="$data" awk -v width="$w" 'BEGIN { x = ENVIRON["ATD_X"]; ... }'
+```
+
+`gawk`'s `-v` applies C string escape rules (`\n \t \b \f \r \v \\ \" \ooo`),
+while `ENVIRON` is a raw byte channel. The difference is observable data loss,
+not a theoretical hazard:
+
+```text
+'a\nb'    --v-->  "a<LF>b"     4 bytes become 3
+'proj\q'  --v-->  "projq"      backslash swallowed, plus a stderr warning
+```
+
+The predicate is "could this value contain a backslash", **not** "does this use
+`-v`". Passing bare ESC bytes through `-v` (e.g. `-v ansi_reset="$ANSI_RESET"`)
+is safe, because `gawk` only rewrites backslash sequences.
+
+The cost of the two channels is the same (both end up in the exec'd argv/env),
+measured: 588 ms vs 587 ms frame median. There is no performance reason to keep
+data on `-v`.
+
+Regression: `tests/test_awk_data_channel.sh`. It asserts both the concrete
+handlers and the class — a grep guard fails the build if a data variable
+reappears on `-v`.
+
 ## Required Verification
 
 Run the focused ANSI test first, then the complete suite:

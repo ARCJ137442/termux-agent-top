@@ -269,9 +269,23 @@ snapshot_lines() {
   printf '%s\n' "$FRAME_PROCESS_SNAPSHOT"
 }
 
+# ── awk 数据通道约定 ────────────────────────────────────────────────────────
+# `-v` 用来传**配置**：数字、脚本自带的固定常量。它们是安全的。
+# 数据（进程 argv、目录名、分支名、整帧文本）必须走 ENVIRON，写成
+#   ATD_X="$data" awk -v width="$w" 'BEGIN { x = ENVIRON["ATD_X"]; ... }'
+#
+# 原因：gawk 的 `-v` 按 C 字符串规则翻译转义序列（\n \t \b \f \r \v \\ \" \ooo），
+# 而 ENVIRON 是数据通道，字节原样保留。差异是可观测的数据损坏：
+#   'a\nb'   --v-->  "a<LF>b"   4 字节变 3 字节
+#   'proj\q' --v-->  "projq"    反斜杠被吞掉，外加一条 stderr warning
+# 本机 awk 是 GNU Awk 5.3.1，已实测。回归在 tests/test_awk_data_channel.sh。
+#
+# 注意反例：`-v ansi_reset="$ANSI_RESET"` 之类是**安全的**——值里是裸 ESC
+# 字节，没有反斜杠可供翻译。所以判据是「值会不会含反斜杠」，不是「用没用 -v」。
 compact_home_path() {
   text="$1"
-  awk -v text="$text" -v home_prefix="$HOME" -v termux_prefix="/data/data/com.termux/files" '
+  ATD_TEXT="$text" ATD_HOME="$HOME" \
+    awk -v termux_prefix="/data/data/com.termux/files" '
     function replace_prefix(value, prefix, replacement,    pos, before, after, result) {
       result = "";
       while ((pos = index(value, prefix)) > 0) {
@@ -288,6 +302,8 @@ compact_home_path() {
       return result value;
     }
     BEGIN {
+      text = ENVIRON["ATD_TEXT"];
+      home_prefix = ENVIRON["ATD_HOME"];
       text = replace_prefix(text, home_prefix, "~");
       text = replace_prefix(text, termux_prefix, "~/..");
       print text;
@@ -602,7 +618,7 @@ render_metric_field() {
   value="$1"
   kind="$2"
   width="$3"
-  padded_text=$(awk -v value="$value" -v width="$width" 'BEGIN { printf "%-*s", width, value }')
+  padded_text=$(ATD_VALUE="$value" awk -v width="$width" 'BEGIN { value = ENVIRON["ATD_VALUE"]; printf "%-*s", width, value }')
   color=$(bar_color_code "$value" "$kind")
   render_colored_text "$padded_text" "$color"
 }
@@ -614,7 +630,7 @@ render_role_field() {
   if [ "$role_text" = "child" ]; then
     role_text="  child"
   fi
-  padded_text=$(awk -v value="$role_text" -v width="$width" 'BEGIN { printf "%-*s", width, value }')
+  padded_text=$(ATD_VALUE="$role_text" awk -v width="$width" 'BEGIN { value = ENVIRON["ATD_VALUE"]; printf "%-*s", width, value }')
   color=$(role_color_code "$role_kind")
   render_colored_text "$padded_text" "$color"
 }
@@ -622,13 +638,14 @@ render_role_field() {
 render_text_field() {
   value="$1"
   width="$2"
-  awk -v value="$value" -v width="$width" 'BEGIN { printf "%-*s", width, value }'
+  ATD_VALUE="$value" awk -v width="$width" 'BEGIN { value = ENVIRON["ATD_VALUE"]; printf "%-*s", width, value }'
 }
 
 render_process_command_field() {
   value="$1"
   width="$2"
-  awk -v value="$value" -v width="$width" 'BEGIN {
+  ATD_VALUE="$value" awk -v width="$width" 'BEGIN {
+    value = ENVIRON["ATD_VALUE"];
     if (width < 1) {
       exit;
     }
@@ -646,7 +663,8 @@ render_process_command_field() {
 render_process_location_field() {
   value="$1"
   width="$2"
-  awk -v value="$value" -v width="$width" 'BEGIN {
+  ATD_VALUE="$value" awk -v width="$width" 'BEGIN {
+    value = ENVIRON["ATD_VALUE"];
     if (width < 1) {
       exit;
     }
@@ -664,12 +682,15 @@ render_process_location_field() {
 render_right_text_field() {
   value="$1"
   width="$2"
-  awk -v value="$value" -v width="$width" 'BEGIN { printf "%*s", width, value }'
+  ATD_VALUE="$value" awk -v width="$width" 'BEGIN { value = ENVIRON["ATD_VALUE"]; printf "%*s", width, value }'
 }
 
+# 注意：length() 数的是**字符**，不是显示格。CJK 与 emoji 会算少，
+# 这是已知缺陷（见 docs/ansi-rendering-contract.md「Width is a
+# locale-dependent property」），本次只修数据通道，不改宽度语义。
 text_width() {
   value="$1"
-  awk -v value="$value" 'BEGIN { print length(value) }'
+  ATD_VALUE="$value" awk 'BEGIN { value = ENVIRON["ATD_VALUE"]; print length(value) }'
 }
 
 render_resource_percent_field() {
@@ -956,8 +977,8 @@ render_tasks_line() {
     fi
 
     segment_text=$(
-      awk -v value="$segment_label" -v width="$segment_width" 'BEGIN {
-        text = value;
+      ATD_VALUE="$segment_label" awk -v width="$segment_width" 'BEGIN {
+        text = ENVIRON["ATD_VALUE"];
         if (length(text) > width) {
           text = substr(text, 1, width);
         }
@@ -1038,7 +1059,8 @@ agent_root_in_list() {
 
 parse_cpu_list_count() {
   list="$1"
-  awk -v list="$list" 'BEGIN {
+  ATD_LIST="$list" awk 'BEGIN {
+    list = ENVIRON["ATD_LIST"];
     gsub(/[[:space:]]+/, "", list);
     if (list == "") {
       print 0;
@@ -1137,7 +1159,11 @@ build_title_layout() {
   fps_text="$3"
   risk_text="$4"
 
-  awk -v width="$width" -v left="$left_text" -v fps="$fps_text" -v risk="$risk_text" 'BEGIN {
+  ATD_LEFT="$left_text" ATD_FPS="$fps_text" ATD_RISK="$risk_text" \
+    awk -v width="$width" 'BEGIN {
+    left = ENVIRON["ATD_LEFT"];
+    fps = ENVIRON["ATD_FPS"];
+    risk = ENVIRON["ATD_RISK"];
     gap = "  ";
     right = fps gap risk;
 
@@ -1692,7 +1718,10 @@ is_armed_target_eligible() {
   case "$TEST_MODE" in
     hotkey_kill|hotkey_kill_fail) return 0 ;;
   esac
-  select_hotkey_targets | awk -F '\t' -v target_pid="$1" -v target_command="$ARMED_COMMAND" '$1 == target_pid && $2 == target_command { found=1 } END { exit !found }'
+  select_hotkey_targets | ATD_TARGET_COMMAND="$ARMED_COMMAND" awk -F '\t' -v target_pid="$1" '
+    $1 == target_pid && $2 == ENVIRON["ATD_TARGET_COMMAND"] { found = 1 }
+    END { exit !found }
+  '
 }
 
 perform_hotkey_kill_all() {
@@ -2207,8 +2236,8 @@ render_plain_header_line() {
 
 render_reverse_text_line() {
   content="$1"
-  awk -v width="$PANEL_WIDTH" -v content="$content" -v reverse="$ANSI_REVERSE" -v reset="$ANSI_RESET" 'BEGIN {
-    text = content;
+  ATD_CONTENT="$content" awk -v width="$PANEL_WIDTH" -v reverse="$ANSI_REVERSE" -v reset="$ANSI_RESET" 'BEGIN {
+    text = ENVIRON["ATD_CONTENT"];
     if (length(text) > width) {
       if (width > 3) {
         text = substr(text, 1, width - 3) "...";
@@ -2236,7 +2265,9 @@ render_title_line() {
     fi
 
     content=$(
-      awk -v width="$title_width" -v left="$left_text" -v right="$right_text" 'BEGIN {
+      ATD_LEFT="$left_text" ATD_RIGHT="$right_text" awk -v width="$title_width" 'BEGIN {
+        left = ENVIRON["ATD_LEFT"];
+        right = ENVIRON["ATD_RIGHT"];
         gap = "  ";
         if (length(right) >= width) {
           if (width > 3) {
@@ -2322,8 +2353,8 @@ EOF
 
 render_panel_line() {
   content="$1"
-  awk -v width="$PANEL_INNER_WIDTH" -v content="$content" 'BEGIN {
-    text = content;
+  ATD_CONTENT="$content" awk -v width="$PANEL_INNER_WIDTH" 'BEGIN {
+    text = ENVIRON["ATD_CONTENT"];
     if (length(text) > width) {
       if (width > 3) {
         text = substr(text, 1, width - 3) "...";
@@ -2452,8 +2483,8 @@ render_status_line() {
   content="$1"
 
   if [ "$STYLE_ENABLED" -eq 1 ]; then
-    awk -v width="$PANEL_WIDTH" -v content="$content" 'BEGIN {
-      text = content;
+    ATD_CONTENT="$content" awk -v width="$PANEL_WIDTH" 'BEGIN {
+      text = ENVIRON["ATD_CONTENT"];
       if (length(text) > width) {
         if (width > 3) {
           text = substr(text, 1, width - 3) "...";
@@ -2527,7 +2558,8 @@ render_process_tree() {
     return
   fi
 
-  snapshot_lines | awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v home_prefix="$HOME" -v termux_prefix="/data/data/com.termux/files" -v location_map="$FRAME_LOCATION_MAP" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" -v fold_enabled="$TREE_FOLD" -v command_short="$COMMAND_SHORT" '
+  snapshot_lines | ATD_HOME="$HOME" ATD_LOCATION_MAP="$FRAME_LOCATION_MAP" \
+    awk -v monitor_pid="$MONITOR_PID" -v command_width="$PROCESS_COMMAND_WIDTH" -v location_width="$PROCESS_LOCATION_WIDTH" -v termux_prefix="/data/data/com.termux/files" -v cpu_bar_width="$CPU_BAR_WIDTH" -v cpu_bar_field_width="$PROCESS_CPU_BAR_FIELD_WIDTH" -v mem_total_kb="$MEM_TOTAL_KB" -v mem_bar_width="$MEM_BAR_WIDTH" -v mem_bar_field_width="$PROCESS_MEM_BAR_FIELD_WIDTH" -v style_enabled="$STYLE_ENABLED" -v ansi_green="$ANSI_BRIGHT_GREEN" -v ansi_yellow="$ANSI_BRIGHT_YELLOW" -v ansi_red="$ANSI_BRIGHT_RED" -v ansi_claude="$ANSI_BRIGHT_CLAUDE" -v ansi_codex="$ANSI_BRIGHT_CODEX" -v ansi_reset="$ANSI_RESET" -v root_list="$AGENT_ROOT_LIST" -v fold_enabled="$TREE_FOLD" -v command_short="$COMMAND_SHORT" '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s);
       sub(/[[:space:]]+$/, "", s);
@@ -2783,6 +2815,8 @@ render_process_tree() {
       return compact_path_prefix(text, termux_prefix, "~/..");
     }
     BEGIN {
+      home_prefix = ENVIRON["ATD_HOME"];
+      location_map = ENVIRON["ATD_LOCATION_MAP"];
       # 折叠基准初始为 -1：还没进入任何基准点时，折叠不生效。
       fold_base_depth = -1;
       root_name_count = split(root_list, root_names, " ");
@@ -3194,7 +3228,13 @@ render_frame_diff() {
     return
   fi
 
-  awk -v previous_frame="$previous_frame" -v current_frame="$current_frame" 'BEGIN {
+  # 整帧文本是数据，必须走 ENVIRON：帧里任何一个字面反斜杠转义
+  # （命令行参数里的 \n \t \b 之类）都会被 -v 翻译成真控制字符，
+  # 于是 awk 数出的行数比真实帧多，后面所有行整体写低一格、错行。
+  ATD_PREVIOUS_FRAME="$previous_frame" ATD_CURRENT_FRAME="$current_frame" \
+    awk 'BEGIN {
+    previous_frame = ENVIRON["ATD_PREVIOUS_FRAME"];
+    current_frame = ENVIRON["ATD_CURRENT_FRAME"];
     previous_count = split(previous_frame, previous_lines, /\n/);
     current_count = split(current_frame, current_lines, /\n/);
     max_count = previous_count > current_count ? previous_count : current_count;

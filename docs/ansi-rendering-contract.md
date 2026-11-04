@@ -192,3 +192,25 @@ users actually run. **Any regex used as a structural probe over a styled
 frame must strip CSI sequences first.** The regression is pinned in
 `tests/test_live_navigation.sh`, which asserts the styled path explicitly;
 both assertions were confirmed to fail against the pre-fix source.
+
+A second class bug was closed on 2026-11-04, and it is the same *kind* of
+defect: a channel used for something it does not promise. `awk -v` applies C
+escape rules to its value, so the whole-frame diff lost line boundaries the
+moment any process on screen had a backslash in its command line. The frame
+really had 12 lines; `awk` saw 13. Every line after the injection point was
+written one row too low and the last row kept the previous frame's bytes.
+
+Worse than misalignment, the payload itself was truncated: a row whose content
+was `a\nb` came out as `a`, with `b` pushed into the next row. Measured bytes
+for a two-frame diff differing only at line 3:
+
+```text
+actual   ESC[3;1H ESC[2K a   ESC[4;1H ESC[2K b   ESC[5;1H ESC[2K L4
+expected ESC[3;1H ESC[2K a\nb
+```
+
+The same channel was carrying `location_map`, which turned a directory named
+`proj\name` into a cell reading only `proj` — `name` leaked out as a separate
+record and was dropped. Both are fixed by moving data to `ENVIRON`; the rule
+and its regression guard live in `AGENTS.md` and
+`tests/test_awk_data_channel.sh`.
