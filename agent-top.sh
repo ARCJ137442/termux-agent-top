@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 set -eu
 
 INTERVAL_SECONDS=1
@@ -236,7 +236,12 @@ process_snapshot() {
     }' "$TEST_PS_FILE"
     return
   fi
-  ps -eo pid=,ppid=,rss=,pcpu=,stat=,comm=,args=
+  # ps 会按终端宽度截断命令行（procps 用 $COLUMNS，管道输出也一样），
+  # 而 agent 的身份特征（@anthropic-ai/claude-code/bin/claude、.../codex）常常在
+  # 第 100 列之后 —— 一旦 COLUMNS 被导出，整屏 agent 会静默消失。
+  # -ww 关掉截断；老 ps 不认 -ww 时退回普通调用。
+  ps -ww -eo pid=,ppid=,rss=,pcpu=,stat=,comm=,args= 2>/dev/null ||
+    ps -eo pid=,ppid=,rss=,pcpu=,stat=,comm=,args=
 }
 
 snapshot_lines() {
@@ -289,6 +294,12 @@ collect_agent_locations() {
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
       if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex-exomind([[:space:]]|$)/) return "codex";
+      # Codex 判定不能依赖 comm：Android 上 comm 是 argv[0] 前 15 个字符，
+      # 绝对路径启动的进程一律被截成 "/data/data/com."，靠 comm 判定等于没判定。
+      #   1) argv[0] 本身就是 .../codex（原生二进制）
+      #   2) comm 是 node/MainThread，且参数里有 .../codex（npm 版入口）
+      if (args_val ~ /^[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       return "";
     }
@@ -1354,8 +1365,14 @@ select_hotkey_target() {
     function agent_kind_for(comm_val, args_val) {
       if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
-      if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
+      if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex-exomind([[:space:]]|$)/) return "codex";
+      # Codex 判定不能依赖 comm：Android 上 comm 是 argv[0] 前 15 个字符，
+      # 绝对路径启动的进程一律被截成 "/data/data/com."，靠 comm 判定等于没判定。
+      #   1) argv[0] 本身就是 .../codex（原生二进制）
+      #   2) comm 是 node/MainThread，且参数里有 .../codex（npm 版入口）
+      if (args_val ~ /^[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       return "";
     }
@@ -1469,8 +1486,14 @@ select_hotkey_targets() {
     function agent_kind_for(comm_val, args_val) {
       if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
-      if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
+      if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex-exomind([[:space:]]|$)/) return "codex";
+      # Codex 判定不能依赖 comm：Android 上 comm 是 argv[0] 前 15 个字符，
+      # 绝对路径启动的进程一律被截成 "/data/data/com."，靠 comm 判定等于没判定。
+      #   1) argv[0] 本身就是 .../codex（原生二进制）
+      #   2) comm 是 node/MainThread，且参数里有 .../codex（npm 版入口）
+      if (args_val ~ /^[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       return "";
     }
@@ -1931,6 +1954,12 @@ collect_agent_rollup() {
         if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
         if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
         if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+        if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex-exomind([[:space:]]|$)/) return "codex";
+        # Codex 判定不能依赖 comm：Android 上 comm 是 argv[0] 前 15 个字符，
+        # 绝对路径启动的进程一律被截成 "/data/data/com."，靠 comm 判定等于没判定。
+        #   1) argv[0] 本身就是 .../codex（原生二进制）
+        #   2) comm 是 node/MainThread，且参数里有 .../codex（npm 版入口）
+        if (args_val ~ /^[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
         if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
         return "";
       }
@@ -2404,8 +2433,14 @@ render_process_tree() {
     function agent_kind_for(comm_val, args_val) {
       if (comm_val == "claude" || comm_val == "claude-exomind") return "claude";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/claude-exomind([[:space:]]|$)/) return "claude";
-      if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
       if (args_val ~ /(^|[[:space:]])[^[:space:]]*@anthropic-ai\/claude-code\/bin\/claude([[:space:]]|$)/) return "claude";
+      if (comm_val == "codex" || comm_val == "codex-exomind") return "codex";
+      if (args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex-exomind([[:space:]]|$)/) return "codex";
+      # Codex 判定不能依赖 comm：Android 上 comm 是 argv[0] 前 15 个字符，
+      # 绝对路径启动的进程一律被截成 "/data/data/com."，靠 comm 判定等于没判定。
+      #   1) argv[0] 本身就是 .../codex（原生二进制）
+      #   2) comm 是 node/MainThread，且参数里有 .../codex（npm 版入口）
+      if (args_val ~ /^[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       if ((comm_val == "MainThread" || comm_val == "node") && args_val ~ /(^|[[:space:]])[^[:space:]]*\/codex([[:space:]]|$)/) return "codex";
       return "";
     }
@@ -2423,9 +2458,39 @@ render_process_tree() {
       }
       return "";
     }
+    # T3 Code 常驻服务：命令行是 ".../t3 serve"（运行时在 ~/.t3/runtime/versions/*/t3）。
+    # 判定只看 args token 边界：Android 上 comm 被截断，靠 comm 认不出 t3；
+    # 也不能整行做子串匹配（"t3-serve" 启动脚本、"t3-termux" 转发器都不是服务端）。
+    function is_t3_server(pid) {
+      return args[pid] ~ /(^|[[:space:]])([^[:space:]]*\/)?t3[[:space:]]+serve([[:space:]]|$)/;
+    }
+    function nearest_t3(pid, parent) {
+      parent = ppid[pid];
+      while (parent != "" && parent != 0) {
+        if (is_t3_server(parent)) return parent;
+        parent = ppid[parent];
+      }
+      return "";
+    }
+    # 「被宿主管辖」的 ROLE 标注
+    #
+    # TODO(human): 定「宿主管辖」在 ROLE 列上怎么标注
+    #   现在默认：t3 宿主 → 向前缩进两格（"  CLAUDE"），和子进程的 "  child" 对称；
+    #             tmux 宿主 → 不缩进（"CLAUDE"），靠它上面的宿主行区分。
+    #   可选改法：
+    #     a) tmux 也缩进 —— 缩进统一表示「被宿主管辖」，宿主由父行区分；
+    #     b) 缩进改 4 格，和树形前缀的层级对齐；
+    #     c) 换成显式前缀（"T3>CLAUDE"），ROLE 列宽 9 装得下。
+    #   约束：ROLE 列宽是 9，"  CLAUDE" 已占 8 格，改完别超宽。
+    function hosted_role_label(kind_text, pid) {
+      if (t3_agent_parent[pid] != "") {
+        return "  " kind_text;
+      }
+      return kind_text;
+    }
     function role_label(root_kind, depth, pid) {
       if (kind[pid] != "") {
-        return toupper(kind[pid]);
+        return hosted_role_label(toupper(kind[pid]), pid);
       }
       if (depth == 0) {
         if (root_kind == "claude") {
@@ -2641,7 +2706,7 @@ render_process_tree() {
       summary = short_args(command_text, command_width);
       mem_percent = safe_percent(rss[pid], mem_total_kb);
       if (depth == 0) {
-        root_kind = (kind[pid] != "" ? kind[pid] : comm[pid]);
+        root_kind = (kind[pid] != "" ? kind[pid] : (is_t3_server(pid) ? "t3" : comm[pid]));
       }
       location_text = "";
       if (depth == 0 || kind[pid] != "") {
@@ -2667,6 +2732,14 @@ render_process_tree() {
         for (i = 1; i <= root_pid_count; i++) {
           child_pid = root_order[i];
           if (tmux_agent_parent[child_pid] == pid && !printed[child_pid]) {
+            printed[child_pid] = 1;
+            print_node(child_pid, depth + 1, kind[child_pid]);
+          }
+        }
+      } else if (is_t3_server(pid)) {
+        for (i = 1; i <= root_pid_count; i++) {
+          child_pid = root_order[i];
+          if (t3_agent_parent[child_pid] == pid && !printed[child_pid]) {
             printed[child_pid] = 1;
             print_node(child_pid, depth + 1, kind[child_pid]);
           }
@@ -2701,14 +2774,35 @@ render_process_tree() {
       kind[pid_val] = agent_kind_for(comm_val, args_val);
       children[ppid_val] = children[ppid_val] " " pid_val;
 
-      if (kind[pid_val] != "" || root[comm_val] || comm_val == "tmux") {
+      if (kind[pid_val] != "" || root[comm_val] || comm_val == "tmux" || is_t3_server(pid_val)) {
         root_order[++root_pid_count] = pid_val;
       }
     }
     END {
+      # 1) 先认 t3 宿主：t3 管辖的 agent 归 T3 行，不再挂到 tmux 行
       for (i = 1; i <= root_pid_count; i++) {
         pid_val = root_order[i];
         if (kind[pid_val] == "") continue;
+        t3_pid = nearest_t3(pid_val);
+        if (t3_pid != "") {
+          t3_agent_parent[pid_val] = t3_pid;
+          t3_display[t3_pid] = 1;
+        }
+      }
+      # 2) t3 自己跑在 tmux 里时，tmux 行照样要显示（保留会话上下文）
+      for (i = 1; i <= root_pid_count; i++) {
+        pid_val = root_order[i];
+        if (!t3_display[pid_val]) continue;
+        tmux_pid = nearest_tmux(pid_val);
+        if (tmux_pid != "") {
+          tmux_display[tmux_pid] = 1;
+        }
+      }
+      # 3) 其余 agent 仍按 tmux 分组
+      for (i = 1; i <= root_pid_count; i++) {
+        pid_val = root_order[i];
+        if (kind[pid_val] == "") continue;
+        if (t3_agent_parent[pid_val] != "") continue;
         tmux_pid = nearest_tmux(pid_val);
         if (tmux_pid != "") {
           tmux_agent_parent[pid_val] = tmux_pid;
@@ -2718,10 +2812,17 @@ render_process_tree() {
       for (i = 1; i <= root_pid_count; i++) {
         pid_val = root_order[i];
         if (kind[pid_val] != "" && tmux_agent_parent[pid_val] != "") continue;
-        if (kind[pid_val] == "" && !tmux_display[pid_val] && !root[comm[pid_val]]) continue;
+        if (kind[pid_val] != "" && t3_agent_parent[pid_val] != "") continue;
+        if (kind[pid_val] == "" && !tmux_display[pid_val] && !t3_display[pid_val] && !root[comm[pid_val]]) continue;
         if (!printed[pid_val]) {
           printed[pid_val] = 1;
-          print_node(pid_val, 0, tmux_display[pid_val] ? "tmux" : (kind[pid_val] != "" ? kind[pid_val] : comm[pid_val]));
+          if (t3_display[pid_val]) {
+            print_node(pid_val, 0, "t3");
+          } else if (tmux_display[pid_val]) {
+            print_node(pid_val, 0, "tmux");
+          } else {
+            print_node(pid_val, 0, kind[pid_val] != "" ? kind[pid_val] : comm[pid_val]);
+          }
         }
       }
     }

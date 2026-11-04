@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
@@ -132,5 +132,120 @@ if ! printf '%s\n' "$narrow_mem" | grep -F -- "${cyan}${reverse}c${reset}" >/dev
   echo 'FAIL: a one-cell Codex label must retain the theme/reverse/reset contract' >&2
   exit 1
 fi
+
+# ── ROLE 列的字节序 ──────────────────────────────────────────────────────
+# ROLE 列是固定 9 格，渲染协议：
+#   [主题色] + 9 个可见格 + [reset]
+# 其中「可见格」的前两格可以是缩进 —— 缩进属于颜色段内部（空格本身不着色，
+# 但仍然在 span 里），所以断言必须落在「紧贴标签之前的字节」上。
+#
+# t3 服务自己那一行没有主题色：ROLE = "T3" 是纯文本，不带 color/reset。
+fixture_dir=$(mktemp -d)
+trap 'rm -rf "$fixture_dir"' EXIT
+cat >"$fixture_dir/t3.ps" <<'EOF_FIXTURE'
+100 1 1024 0.1 tmux tmux new-session -d -s t3-serve
+102 101 205028 3.5 /data/data/com. /data/data/com.termux/files/home/.t3/runtime/versions/0.1.6/t3 serve
+103 102 56484 2.8 /data/data/com. /data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1 --library-path /data/data/com.termux/files/usr/glibc/lib @anthropic-ai/claude-code/bin/claude --output-format stream-json --verbose
+106 102 4104 0.3 /data/data/com. /data/data/com.termux/files/usr/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex app-server
+108 1 56484 1.2 /data/data/com. /data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1 --library-path /data/data/com.termux/files/usr/glibc/lib @anthropic-ai/claude-code/bin/claude --output-format stream-json
+EOF_FIXTURE
+
+styled_tree=$(COLUMNS=200 CODEX_TOP_FORCE_STYLE=1 CODEX_TOP_TEST_PS_FILE="$fixture_dir/t3.ps" "$SCRIPT" --once)
+plain_tree=$(COLUMNS=200 CODEX_TOP_TEST_PS_FILE="$fixture_dir/t3.ps" "$SCRIPT" --once)
+
+# 紧贴标签之前的字节 —— 取「最后一个 reset 之后」到标签之间的那一段，
+# 也就是 ROLE 字段自己带的那一段（上一格进度条的 reset 之前的不算）
+bytes_before() {
+  printf '%s\n' "$1" | awk -v label="$2" -v reset="$reset" '
+    {
+      line = $0;
+      pos = index(line, label);
+      if (pos > 0) {
+        prefix = substr(line, 1, pos - 1);
+        last = 0;
+        search = 1;
+        while (1) {
+          found = index(substr(prefix, search), reset);
+          if (found == 0) break;
+          last = search + found - 1;
+          search = last + length(reset);
+        }
+        if (last > 0) print substr(prefix, last + length(reset));
+        else print prefix;
+        exit;
+      }
+    }'
+}
+
+row_for() {
+  printf '%s\n' "$1" | grep -E "^$2 " | head -n 1
+}
+
+t3_styled_row=$(row_for "$styled_tree" 102)
+t3_plain_row=$(row_for "$plain_tree" 102)
+hosted_claude_row=$(row_for "$styled_tree" 103)
+hosted_codex_row=$(row_for "$styled_tree" 106)
+standalone_claude_row=$(row_for "$styled_tree" 108)
+
+if [ -z "$t3_styled_row" ] || [ -z "$hosted_claude_row" ] || [ -z "$hosted_codex_row" ] || [ -z "$standalone_claude_row" ]; then
+  echo 'FAIL: the T3 fixture rows must all be rendered' >&2
+  exit 1
+fi
+
+# 1) t3 服务自己的 ROLE 字段是纯文本：标签之前不得出现任何 CSI 序列
+#    （上一格进度条自己的 reset 结束符是允许的，它不属于 ROLE 字段）
+t3_before=$(bytes_before "$t3_styled_row" 'T3')
+if [ -z "$t3_before" ]; then
+  echo 'FAIL: the T3 role label could not be located in its row' >&2
+  exit 1
+fi
+case "$t3_before" in
+  *"${escape}["*)
+    echo 'FAIL: the T3 role label must be plain text without a color span' >&2
+    exit 1
+    ;;
+esac
+
+# 2) 被 t3 管辖的 agent：主题色 → 两格缩进 → 标签，顺序不能反
+claude_before=$(bytes_before "$hosted_claude_row" 'CLAUDE')
+case "$claude_before" in
+  *"${orange}  ")
+    ;;
+  *)
+    echo "FAIL: a T3-hosted Claude role must render theme color, then the two-space indent, then the label" >&2
+    exit 1
+    ;;
+esac
+
+codex_before=$(bytes_before "$hosted_codex_row" 'CODEX')
+case "$codex_before" in
+  *"${cyan}  ")
+    ;;
+  *)
+    echo "FAIL: a T3-hosted Codex role must render theme color, then the two-space indent, then the label" >&2
+    exit 1
+    ;;
+esac
+
+# 3) 不被 t3 管辖的 agent：没有缩进，颜色直接贴住标签
+standalone_before=$(bytes_before "$standalone_claude_row" 'CLAUDE')
+case "$standalone_before" in
+  *"${orange}")
+    ;;
+  *)
+    echo 'FAIL: a standalone Claude role must not be indented' >&2
+    exit 1
+    ;;
+esac
+
+# 4) 去掉 ANSI 之后，styled 与 plain 的行必须逐字相同
+for pid in 102 103 106 108; do
+  styled_row=$(row_for "$styled_tree" "$pid")
+  plain_row=$(row_for "$plain_tree" "$pid")
+  if [ "$(strip_ansi "$styled_row")" != "$plain_row" ]; then
+    echo "FAIL: ANSI styling changed the visible content of row $pid" >&2
+    exit 1
+  fi
+done
 
 echo 'PASS: ANSI rendering contract and visible-width invariants hold'

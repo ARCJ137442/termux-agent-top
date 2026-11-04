@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -8,6 +8,12 @@ if [ ! -x "$SCRIPT" ]; then
   echo "FAIL: missing executable script at $SCRIPT" >&2
   exit 1
 fi
+
+# 宽度必须钉死：面板宽度决定了进度条槽数、汇总行是否换行、命令列会不会被截断。
+# 不钉的话，同一份断言在 78 列的终端上失败、在 300 列的终端上通过 —— 那是终端的
+# 性质，不是脚本的性质。200 列足够放下 50 槽进度条和完整汇总行。
+COLUMNS=200
+export COLUMNS
 
 output=$("$SCRIPT" --once)
 summary_only_output=$("$SCRIPT" --once --summary-only)

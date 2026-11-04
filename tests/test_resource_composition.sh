@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
@@ -31,6 +31,7 @@ cat >"$location_map" <<'EOF_LOCATIONS'
 EOF_LOCATIONS
 
 output=$(
+  COLUMNS=200 \
   CODEX_TOP_TEST_MODE=diff \
   CODEX_TOP_TEST_PS_FILE="$fixture" \
   CODEX_TOP_TEST_LOCATION_FILE="$location_map" \
